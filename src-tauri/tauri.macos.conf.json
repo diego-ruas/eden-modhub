@@ -1,0 +1,15 @@
+{
+  "app": {
+    "windows": [
+      {
+        "title": "Eden ModHub",
+        "width": 1100,
+        "height": 720,
+        "minWidth": 900,
+        "minHeight": 600,
+        "zoomHotkeysEnabled": true
+      }
+    ]
+  },
+  "bundle": { "targets": ["app", "dmg"] }
+}
