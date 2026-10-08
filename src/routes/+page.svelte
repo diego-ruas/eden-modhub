@@ -2,12 +2,13 @@
   import "@fontsource-variable/geist";
   import { onMount } from "svelte";
   import { listen } from "@tauri-apps/api/event";
+  import { getVersion } from "@tauri-apps/api/app";
   import { open, confirm } from "@tauri-apps/plugin-dialog";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import {
     api, githubUrl, modPath, SOURCE_LABEL, norm,
     type Catalog, type Game, type Installed, type ModEntry, type NszOp, type Prepared, type RomFile,
-    type Emu, type RootInfo, type Source, type UpdateCheck,
+    type Emu, type RootInfo, type Source, type UpdateCheck, type EmuDir, type StorageInfo,
   } from "$lib/api";
   import { EMU_HINT, EMU_NAME, i18n, locale, setLang, t, trErr, type Lang } from "$lib/i18n.svelte";
 
@@ -33,6 +34,13 @@
   let guide = $state<HTMLDialogElement>();
   let upd = $state<HTMLDialogElement>();
   let update = $state<UpdateCheck | null>(null);
+  let sett = $state<HTMLDialogElement>();
+  let appVersion = $state("");
+  let emuDirs = $state<EmuDir[]>([]);
+  let storage = $state<StorageInfo | null>(null);
+  let autoUpdate = $state(localStorage.getItem("autoUpdate") !== "off");
+  let micaOn = $state(localStorage.getItem("mica") !== "off");
+  let micaOk = $state(false);
   let checked = $state<Record<string, boolean>>({});
   let tab = $state<"mods" | "nsz">("mods");
   let roms = $state<RomFile[]>([]);
@@ -84,6 +92,10 @@
     chev: "M9 6l6 6-6 6",
     help: "M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18z M9.6 9.5a2.5 2.5 0 1 1 3.5 2.3c-.7.4-1.1.9-1.1 1.7 M12 17h.01",
     update: "M12 4v11 M7 10l5 5 5-5 M5 20h14",
+    check: "M5 12l5 5 9-10",
+    x: "M6 6l12 12 M18 6L6 18",
+    alert: "M12 3l9.5 17h-19z M12 10v4 M12 17h.01",
+    settings: "M12 15a3 3 0 1 0 0-6a3 3 0 1 0 0 6z M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z",
   };
   const initials = (s: string) =>
     s.split(/\s+/).map((w) => w.match(/[\p{L}\p{N}]/u)?.[0] ?? "").filter(Boolean).slice(0, 2).join("").toUpperCase() || "?";
@@ -136,7 +148,7 @@
   };
 
   $effect(() => {
-    if (prepared && !dlg?.open) dlg?.showModal();
+    if (prepared && !dlg?.open) openModal(dlg);
     else if (!prepared && dlg?.open) dlg.close();
   });
 
@@ -252,7 +264,7 @@
   async function checkUpdate() {
     const r = await run(() => api.checkUpdate());
     if (!r) return;
-    if (r.version) { update = r; upd?.showModal(); } else notice = t("updLatest", { v: r.current });
+    if (r.version) { update = r; openModal(upd); } else notice = t("updLatest", { v: r.current });
   }
   async function installUpdate() {
     upd?.close();
@@ -315,11 +327,49 @@
     await reloadEmu();
   }
 
-  async function changeDir() {
-    const p = await open({ directory: true, title: t("edenDirTitle") });
+  async function changeDir(kind: Emu = emu) {
+    const p = await open({ directory: true, title: t("edenDirTitle", { emu: EMU_NAME[kind] }) });
     if (typeof p !== "string") return;
-    if ((await run(() => api.setEmuDir(p))) === undefined && error) return;
-    await reloadEmu();
+    if ((await run(() => api.setEmuDir(kind, p))) === undefined && error) return;
+    if (kind === emu) await reloadEmu();
+    if (sett?.open) await refreshSettings();
+  }
+
+  function openModal(d?: HTMLDialogElement) { d?.showModal(); d?.focus(); }
+
+  async function openSettings() {
+    error = "";
+    notice = "";
+    openModal(sett);
+    appVersion ||= await getVersion();
+    await refreshSettings();
+  }
+  async function refreshSettings() {
+    emuDirs = (await run(api.getEmuDirs)) ?? [];
+    storage = (await run(api.storageInfo)) ?? null;
+  }
+  async function clearCache() {
+    if ((await run(() => api.clearCache())) === undefined && error) return;
+    notice = t("setCleared");
+    await refreshSettings();
+  }
+  async function removeTools() {
+    if ((await run(() => api.removeTools())) === undefined && error) return;
+    notice = t("setNszRemoved");
+    await refreshSettings();
+  }
+  function applyMica() {
+    if (micaOk && micaOn) document.documentElement.dataset.mica = "";
+    else delete document.documentElement.dataset.mica;
+  }
+  function setMica(on: boolean) {
+    micaOn = on;
+    localStorage.setItem("mica", on ? "on" : "off");
+    applyMica();
+  }
+  function setAutoUpdate(on: boolean) {
+    autoUpdate = on;
+    localStorage.setItem("autoUpdate", on ? "on" : "off");
   }
 
   async function select(g: Game) {
@@ -402,13 +452,14 @@
 
   onMount(() => {
     document.documentElement.lang = locale();
-    if (!localStorage.getItem("guideSeen")) guide?.showModal();
+    if (!localStorage.getItem("guideSeen")) openModal(guide);
     // Mica só existe no Windows 11 (platformVersion >= 13 no Chromium/WebView2); fora dele o fundo fica opaco
     const uad = (navigator as Navigator & {
       userAgentData?: { platform: string; getHighEntropyValues(h: string[]): Promise<{ platformVersion?: string }> };
     }).userAgentData;
     uad?.getHighEntropyValues(["platformVersion"]).then((v) => {
-      if (uad.platform === "Windows" && parseInt(v.platformVersion ?? "0") >= 13) document.documentElement.dataset.mica = "";
+      micaOk = uad.platform === "Windows" && parseInt(v.platformVersion ?? "0") >= 13;
+      applyMica();
     });
     const un = listen<{ received: number; total: number | null }>("download-progress", (e) => {
       progress = e.payload;
@@ -424,7 +475,7 @@
       nszLog = (nszLog + e.payload + "\n").slice(-6000);
     });
     reloadEmu();
-    api.checkUpdate().then((r) => { if (r.version && !guide?.open) { update = r; upd?.showModal(); } }).catch(() => {});
+    if (autoUpdate) api.checkUpdate().then((r) => { if (r.version && !guide?.open) { update = r; openModal(upd); } }).catch(() => {});
     return () => {
       un.then((f) => f());
       unNsz.then((f) => f());
@@ -442,7 +493,7 @@
     </div>
     {#if m.version}
       {@const match = selected?.version === m.version}
-      <span class="badge" class:ok={match} title={match ? t("versionMatch") : undefined}>{match ? "✓ " : ""}{m.version}</span>
+      <span class="badge" class:ok={match} title={match ? t("versionMatch") : undefined}>{#if match}{@render icon(ICON.check)}{/if}{m.version}</span>
     {/if}
     <span class="size">{fmtSize(m.size)}</span>
     <button disabled={busy} onclick={() => install(m)}>{t("install")}</button>
@@ -469,14 +520,16 @@
 
 <div class="app">
   <nav class="rail" aria-label="ModHub">
-    <img class="logo" src="/logo.png" alt="" />
+    <button class="logo-btn" popovertarget="app-menu" aria-haspopup="menu" aria-label={t("menu")} title={t("menu")}><img class="logo" src="/logo.png" alt="" /></button>
+    <div id="app-menu" class="menu" popover role="menu">
+      <button role="menuitem" popovertarget="app-menu" popovertargetaction="hide" onclick={openSettings}>{@render icon(ICON.settings)}{t("settings")}</button>
+      <button role="menuitem" popovertarget="app-menu" popovertargetaction="hide" onclick={() => openModal(guide)}>{@render icon(ICON.help)}{t("guideOpen")}</button>
+      <button role="menuitem" popovertarget="app-menu" popovertargetaction="hide" disabled={busy} onclick={checkUpdate}>{@render icon(ICON.update)}{t("updCheck")}</button>
+    </div>
     <button class="rail-btn" title={t("tabMods")} aria-label={t("tabMods")} aria-current={tab === "mods" ? "page" : undefined} onclick={() => (tab = "mods")}>{@render icon(ICON.mods)}</button>
     <button class="rail-btn" title={t("tabNsz")} aria-label={t("tabNsz")} aria-current={tab === "nsz" ? "page" : undefined} disabled={!emuDir} onclick={showNsz}>{@render icon(ICON.nsz)}</button>
     <span class="spacer"></span>
     <button class="rail-btn" class:spin={loadingCatalog} title={loadingCatalog ? t("refreshing") : t("refreshCatalog")} aria-label={t("refreshCatalog")} disabled={busy || !emuDir} aria-busy={loadingCatalog} onclick={() => loadCatalog(true)}>{@render icon(ICON.refresh)}</button>
-    <button class="rail-btn" title={t("guideOpen")} aria-label={t("guideOpen")} onclick={() => guide?.showModal()}>{@render icon(ICON.help)}</button>
-    <button class="rail-btn" title={t("updCheck")} aria-label={t("updCheck")} disabled={busy} onclick={checkUpdate}>{@render icon(ICON.update)}</button>
-    <button class="rail-btn lang" aria-label={t("language")} title={t("language")} onclick={() => setLang(i18n.lang === "pt" ? "en" : "pt")}>{i18n.lang === "pt" ? "PT" : "EN"}</button>
   </nav>
   <div class="content">
     <header class="topbar">
@@ -491,14 +544,14 @@
         <span class="muted small">{t("catalogFrom", { date: new Date(catalog.fetchedAt * 1000).toLocaleDateString(locale()) })}</span>
       {/if}
       <span class="path muted small" title={emuDir ?? ""}>{t("edenLabel", { path: emuDir ?? t("notFound") })}</span>
-      <button class="link" onclick={changeDir}>{t("change")}</button>
+      <button class="link" onclick={() => changeDir()}>{t("change")}</button>
     </header>
 
     {#if !emuDir}
       <div class="empty panel">
         <p>{t("noEden")}</p>
         <p class="muted">{t("noEdenHint", { path: EMU_HINT[emu] })}</p>
-        <button class="primary" onclick={changeDir}>{t("pickEden")}</button>
+        <button class="primary" onclick={() => changeDir()}>{t("pickEden")}</button>
       </div>
     {:else if tab === "nsz"}
       <section class="nsz">
@@ -511,7 +564,7 @@
           <button class="primary" disabled={busy} onclick={pickRom}>{@render icon(ICON.plus)}{t("pickFile")}</button>
         </div>
         <div class="panel nsz-head">
-          <details class="what"><summary>{t("nszWhat")}</summary><p class="muted">{emu === "eden" ? t("nszIntro") : t("nszIntroOther")}</p></details>
+          <details class="what"><summary><span class="chev">{@render icon(ICON.chev)}</span>{t("nszWhat")}</summary><p class="muted">{emu === "eden" ? t("nszIntro") : t("nszIntroOther")}</p></details>
           <label class="del"><input type="checkbox" bind:checked={deleteSource} /> {t("deleteOriginal")}
             {#if deleteSource}<span class="muted"> — {t("quickVerifyHint")}</span>{/if}</label>
           {#if romFilter}<p class="muted small">{t("romCount", { shown: shownRoms.length, total: romList.length })}</p>{/if}
@@ -556,9 +609,9 @@
                       {#if kindOf(r.name)}<span class="badge tag">{t(kindOf(r.name)!)}</span>{/if}{itemName(r, g.name)}
                     </div>
                     {#if nszCur?.path === r.path}
-                      <div class="sub run">⏳ {runVerb(nszCur.op)}… {elapsed}</div>
+                      <div class="sub run">{@render icon(ICON.refresh)}{runVerb(nszCur.op)}… {elapsed}</div>
                     {:else if nszRes[r.path]}
-                      <div class="sub" class:bad={!nszRes[r.path].ok}>{nszRes[r.path].ok ? "✓" : "✗"} {nszRes[r.path].text}</div>
+                      <div class="sub" class:bad={!nszRes[r.path].ok}>{@render icon(nszRes[r.path].ok ? ICON.check : ICON.x)}{nszRes[r.path].text}</div>
                     {:else}
                       <div class="sub">{r.ext.toUpperCase()}{r.size ? ` · ${fmtSize(r.size)}` : ""}</div>
                     {/if}
@@ -574,7 +627,7 @@
               {/each}
             </details>
           {:else}
-            <p class="muted">{t("noRoms")}</p>
+            <div class="hint">{@render icon(ICON.nsz)}<p>{t("noRoms")}</p></div>
           {/each}
         </div>
       </section>
@@ -619,13 +672,13 @@
               {/each}
             </div>
             {#if selected.version}
-              <div class="seg"><button aria-pressed={onlyMatch} onclick={() => (onlyMatch = !onlyMatch)}>{onlyMatch ? "✓ " : ""}{t("onlyMatch")} ({selected.version})</button></div>
+              <label class="toggle"><input type="checkbox" bind:checked={onlyMatch} /> {t("onlyMatch")} ({selected.version})</label>
             {/if}
           </div>
         {/if}
         <div class="detail">
           {#if !selected}
-            <p class="muted pad">{t("selectGame")}</p>
+            <div class="hint">{@render icon(ICON.mods)}<p>{t("selectGame")}</p></div>
           {:else}
             <div class="head">
               {#if selected.icon}<img class="cover" src={selected.icon} alt="" />{/if}
@@ -688,12 +741,12 @@
         <div class="track"><div class="fill" class:indet={!progress.total} style:width={progress.total ? `${Math.min(100, (progress.received / progress.total) * 100)}%` : undefined}></div></div>
       </div>
     {/if}
-    <div role="alert">{#if error}<div class="toast err"><span class="ico" aria-hidden="true">⚠</span>{error}<button class="x" aria-label={t("dismiss")} onclick={() => (error = "")}>×</button></div>{/if}</div>
-    <div role="status">{#if notice}<div class="toast ok"><span class="ico" aria-hidden="true">✓</span>{notice}<button class="x" aria-label={t("dismiss")} onclick={() => (notice = "")}>×</button></div>{/if}</div>
+    <div role="alert">{#if error}<div class="toast err"><span class="ico">{@render icon(ICON.alert)}</span>{error}<button class="x" aria-label={t("dismiss")} onclick={() => (error = "")}>{@render icon(ICON.x)}</button></div>{/if}</div>
+    <div role="status">{#if notice}<div class="toast ok"><span class="ico">{@render icon(ICON.check)}</span>{notice}<button class="x" aria-label={t("dismiss")} onclick={() => (notice = "")}>{@render icon(ICON.x)}</button></div>{/if}</div>
   </div>
 
 
-  <dialog bind:this={dlg} class="modal" aria-labelledby="dlg-title" oncancel={(e) => { e.preventDefault(); cancel(); }}>
+  <dialog bind:this={dlg} class="modal" aria-labelledby="dlg-title" tabindex="-1" oncancel={(e) => { e.preventDefault(); cancel(); }}>
     {#if prepared}
       <h3 id="dlg-title">{t("chooseTitle")}</h3>
       <p class="muted">{t("chooseHint")}</p>
@@ -714,7 +767,7 @@
     {/if}
   </dialog>
 
-  <dialog bind:this={guide} class="modal guide" aria-labelledby="guide-title" onclose={() => localStorage.setItem("guideSeen", "1")}>
+  <dialog bind:this={guide} class="modal guide" aria-labelledby="guide-title" tabindex="-1" onclose={() => localStorage.setItem("guideSeen", "1")}>
     <h3 id="guide-title">{t("guideTitle")}</h3>
     <ol>
       {#each [["g1t", "g1b"], ["g2t", "g2b"], ["g3t", "g3b"], ["g4t", "g4b"]] as const as [h, b] (h)}
@@ -724,13 +777,91 @@
     <div class="actions"><button class="primary" onclick={() => guide?.close()}>{t("guideDone")}</button></div>
   </dialog>
 
-  <dialog bind:this={upd} class="modal" aria-labelledby="upd-title">
+  <dialog bind:this={upd} class="modal" aria-labelledby="upd-title" tabindex="-1">
     {#if update?.version}
       <h3 id="upd-title">{t("updTitle", { v: update.version })}</h3>
       <p class="muted">{t("updBody", { cur: update.current })}</p>
       {#if update.notes}<pre class="upd-notes">{update.notes}</pre>{/if}
       <div class="actions"><button class="ghost" onclick={() => upd?.close()}>{t("updLater")}</button><button class="primary" onclick={installUpdate}>{t("updNow")}</button></div>
     {/if}
+  </dialog>
+
+  <dialog bind:this={sett} class="modal settings" aria-labelledby="set-title" tabindex="-1">
+    <h3 id="set-title">{t("settings")}</h3>
+    <div class="sbody">
+      <section class="srow">
+        <h4>{t("language")}</h4>
+        <div class="sctl">
+          <div class="seg" role="group" aria-label={t("language")}>
+            {#each [["pt", "Português"], ["en", "English"]] as const as [l, name] (l)}
+              <button aria-pressed={i18n.lang === l} onclick={() => setLang(l)}>{name}</button>
+            {/each}
+          </div>
+        </div>
+      </section>
+      {#if micaOk}
+        <section class="srow">
+          <h4>{t("setAppearance")}</h4>
+          <div class="sctl">
+            <label><input type="checkbox" checked={micaOn} onchange={(e) => setMica(e.currentTarget.checked)} /> {t("setMica")}</label>
+          </div>
+        </section>
+      {/if}
+      <section class="srow">
+        <h4>{t("setUpdates")}</h4>
+        <div class="sctl">
+          <p class="muted small">{t("setVersion", { v: appVersion })}</p>
+          <label><input type="checkbox" checked={autoUpdate} onchange={(e) => setAutoUpdate(e.currentTarget.checked)} /> {t("setAutoCheck")}</label>
+          <button disabled={busy} onclick={checkUpdate}>{t("updCheck")}</button>
+        </div>
+      </section>
+      <section class="srow">
+        <h4>{t("setFolders")}</h4>
+        <div class="sctl">
+          <div class="dirs">
+            {#each emuDirs as d (d.kind)}
+              <div class="dirrow">
+                <b>{EMU_NAME[d.kind]}</b>
+                <span class="path muted small" title={d.dir ?? ""}>{d.dir ?? t("notFound")}</span>
+                <button disabled={busy} onclick={() => changeDir(d.kind)}>{t("change")}</button>
+              </div>
+            {/each}
+          </div>
+        </div>
+      </section>
+      <section class="srow">
+        <h4>{t("setCatalog")}</h4>
+        <div class="sctl">
+          {#if catalog}<p class="muted small">{t("catalogFrom", { date: new Date(catalog.fetchedAt * 1000).toLocaleDateString(locale()) })}</p>{/if}
+          <p class="muted small">{t("setCache", { size: storage?.cacheBytes ? fmtSize(storage.cacheBytes) : "0 KB" })}</p>
+          <div class="btns">
+            <button disabled={busy || !emuDir} onclick={() => loadCatalog(true)}>{t("refreshCatalog")}</button>
+            <button disabled={busy} onclick={clearCache}>{t("setClear")}</button>
+          </div>
+        </div>
+      </section>
+      <section class="srow">
+        <h4>{t("setNsz")}</h4>
+        <div class="sctl">
+          <p class="muted small">{storage?.toolsBytes ? fmtSize(storage.toolsBytes) : t("setNszNone")}</p>
+          <button disabled={busy || !!nszCur || !storage?.toolsBytes} onclick={removeTools}>{t("setNszRemove")}</button>
+        </div>
+      </section>
+      <section class="srow">
+        <h4>{t("setAbout")}</h4>
+        <div class="sctl">
+          <div class="btns">
+            <button onclick={() => openUrl("https://github.com/diego-ruas/eden-modhub")}>{t("setRepo")}</button>
+            <button onclick={() => openUrl("https://github.com/diego-ruas/eden-modhub/releases/latest")}>{t("setReleases")}</button>
+          </div>
+          <p class="muted small">{t("setLegal")}</p>
+        </div>
+      </section>
+    </div>
+    <div class="actions">
+      {#if error}<p class="serr" role="alert">{error}</p>{:else if notice}<p class="muted small" role="status">{notice}</p>{/if}
+      <button class="primary" onclick={() => sett?.close()}>{t("setClose")}</button>
+    </div>
   </dialog>
 </div>
 
@@ -747,7 +878,7 @@
     --accent: #f1f1f2; --focus: #9cc2ff;
     --danger: #ef6b63; --danger-bg: rgb(229 83 75 / 0.16); --ok: #4ac26b; --ok-bg: rgb(74 194 107 / 0.14);
     --sel: rgb(255 255 255 / 0.09); --badge: rgb(255 255 255 / 0.08); --badge-ok: rgb(74 194 107 / 0.22);
-    --toast: rgb(24 25 29 / 0.92); --backdrop: rgb(0 0 0 / 0.45); --shadow: 0 12px 32px rgb(5 8 20 / 0.45);
+    --toast: rgb(24 25 29 / 0.92); --backdrop: rgb(0 0 0 / 0.45); --shadow: 0 12px 32px rgb(5 8 20 / 0.45); --scroll: rgb(255 255 255 / 0.16);
   }
   :global(:root[data-mica]) { --base-a: 0.5; }
   @media (prefers-color-scheme: light) {
@@ -761,7 +892,7 @@
       --accent: #1a56db; --focus: #1a4fd6;
       --danger: #b3261e; --danger-bg: rgb(179 38 30 / 0.1); --ok: #1d7a3e; --ok-bg: rgb(29 122 62 / 0.1);
       --sel: rgb(0 0 0 / 0.07); --badge: rgb(0 0 0 / 0.07); --badge-ok: rgb(29 122 62 / 0.15);
-      --toast: rgb(255 255 255 / 0.95); --backdrop: rgb(0 0 0 / 0.25); --shadow: 0 12px 32px rgb(40 60 110 / 0.14);
+      --toast: rgb(255 255 255 / 0.95); --backdrop: rgb(0 0 0 / 0.25); --shadow: 0 12px 32px rgb(40 60 110 / 0.14); --scroll: rgb(0 0 0 / 0.18);
     }
     :global(:root[data-mica]) { --base-a: 0.6; }
   }
@@ -769,17 +900,19 @@
   @media (prefers-reduced-transparency: reduce) { :global(:root[data-mica]) { --base-a: 0.94; } }
 
   :global(:focus-visible) { outline: 2px solid var(--focus); outline-offset: 2px; }
+  :global(::-webkit-scrollbar) { width: 10px; height: 10px; }
+  :global(::-webkit-scrollbar-thumb) { background: var(--scroll); border-radius: 5px; border: 3px solid transparent; background-clip: padding-box; }
+  :global(::-webkit-scrollbar-button) { display: none; }
   :global(html), :global(body) { background: transparent; }
   :global(body) { margin: 0; font: 14px/1.45 "Geist Variable", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; letter-spacing: -0.006em; color: var(--fg); height: 100vh; overflow: hidden; }
   :global(#svelte) { height: 100%; }
 
   .app { display: flex; height: 100vh; background-color: var(--base); }
   .rail { display: flex; flex-direction: column; align-items: center; gap: 6px; width: 56px; flex-shrink: 0; padding: 12px 0; box-sizing: border-box; border-right: 1px solid var(--border); }
-  .logo { width: 32px; height: 32px; margin-bottom: 10px; display: block; }
+  .logo { width: 32px; height: 32px; display: block; }
   .rail-btn { width: 38px; height: 38px; justify-content: center; padding: 0; background: transparent; color: var(--muted); border-radius: 10px; }
   .rail-btn:hover:not(:disabled) { background: var(--ghost); color: var(--fg); }
   .rail-btn[aria-current="page"] { background: var(--sel); color: var(--fg); }
-  .rail-btn.lang { font-size: 11px; font-weight: 600; }
   .rail-btn.spin :global(.icon) { animation: rot 1s linear infinite; }
   @keyframes rot { to { transform: rotate(360deg); } }
   .content { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
@@ -788,12 +921,15 @@
   .seg { display: flex; gap: 2px; padding: 2px; border-radius: 8px; background: var(--input); border: 1px solid var(--border); }
   .seg button { background: transparent; color: var(--muted); border-radius: 6px; padding: 3px 12px; font-size: 12px; font-weight: 500; }
   .seg button[aria-pressed="true"] { background: var(--sel); color: var(--fg); }
-  .path { max-width: 34%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .topbar .path { max-width: 34%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .link { background: none; color: var(--fg-soft); padding: 0; text-decoration: underline; text-underline-offset: 2px; font-size: 12px; }
   .spacer { flex: 1; }
   .muted { color: var(--muted); }
   .small { font-size: 12px; }
   .pad { padding: 12px; }
+  .hint { margin: auto; display: flex; flex-direction: column; align-items: center; gap: 10px; color: var(--muted); }
+  .hint p { margin: 0; }
+  .hint :global(.icon) { width: 28px; height: 28px; opacity: 0.6; }
   .icon { width: 16px; height: 16px; flex-shrink: 0; }
 
   input:not([type="checkbox"]) { background: var(--input); color: inherit; border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; box-sizing: border-box; width: 100%; font: inherit; }
@@ -802,12 +938,17 @@
   .search input { flex: 1; min-width: 0; height: 100%; border: 0; background: transparent; padding: 0; border-radius: 0; }
   .search input:focus-visible { outline: none; }
 
-  button { display: inline-flex; align-items: center; gap: 6px; background: var(--ghost); color: var(--ghost-fg); border: 0; border-radius: 8px; padding: 6px 12px; cursor: pointer; font: inherit; white-space: nowrap; transition: background-color 0.15s, color 0.15s; }
+  button { display: inline-flex; align-items: center; gap: 6px; background: var(--ghost); color: var(--ghost-fg); border: 0; border-radius: 8px; padding: 6px 12px; cursor: pointer; font: inherit; white-space: nowrap; transition: background-color 0.15s, color 0.15s, transform 0.1s; }
+  button:active:not(:disabled) { transform: translateY(1px); }
+  input[type="checkbox"] { accent-color: var(--fg); width: 15px; height: 15px; margin: 0; flex-shrink: 0; cursor: pointer; }
+  label:has(> input[type="checkbox"]) { display: flex; align-items: center; gap: 8px; cursor: pointer; }
   button:hover:not(:disabled) { background: var(--ghost-hover); }
   button:disabled { opacity: 0.4; cursor: not-allowed; }
   button.primary { background: var(--primary); color: var(--on-primary); font-weight: 600; padding: 7px 14px; }
   button.primary:hover:not(:disabled) { background: var(--primary); filter: brightness(0.9); }
-  button.danger { background: transparent; color: var(--danger); border: 1px solid var(--danger-bg); }
+  button.ghost { background: transparent; color: var(--muted); }
+  button.ghost:hover:not(:disabled) { background: var(--ghost); color: var(--fg); }
+  button.danger { background: transparent; color: var(--danger); }
   button.danger:hover:not(:disabled) { background: var(--danger-bg); }
   button.icon-btn { padding: 4px; background: transparent; color: var(--muted); }
 
@@ -831,6 +972,7 @@
   .pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   .filters { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 12px 28px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
   .filters .search { flex: 1; min-width: 180px; width: auto; max-width: 320px; }
+  .toggle { font-size: 12px; color: var(--fg-soft); }
   .detail { display: flex; flex-direction: column; gap: 20px; overflow-y: auto; flex: 1; min-height: 0; padding: 22px 28px 32px; }
   .detail h2 { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.15; text-wrap: balance; }
   .detail .panel-head { color: var(--fg); }
@@ -846,9 +988,12 @@
   .name, .sub { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .name { font-weight: 500; }
   .sub { font-size: 12px; color: var(--muted); }
+  .sub :global(.icon) { width: 12px; height: 12px; vertical-align: -2px; margin-right: 4px; }
+  .sub.run :global(.icon) { animation: rot 1s linear infinite; }
   .sub .src { border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; margin-right: 4px; }
   .sub.bad { color: var(--danger); }
   .badge { background: var(--badge); color: var(--fg-soft); border-radius: 4px; padding: 1px 6px; font-size: 12px; margin-left: 6px; font-variant-numeric: tabular-nums; }
+  .badge :global(.icon) { width: 11px; height: 11px; vertical-align: -1px; margin-right: 3px; }
   .badge.ok { background: var(--badge-ok); color: var(--fg); }
   .badge.tag { margin: 0 8px 0 0; font-size: 11px; }
   .size { color: var(--muted); font-size: 12px; min-width: 60px; text-align: right; font-variant-numeric: tabular-nums; }
@@ -859,9 +1004,11 @@
   .nsz-head { flex-shrink: 0; padding: 14px 16px; }
   .nsz-head > p { margin: 6px 0 0; }
   .what { font-size: 13px; color: var(--muted); }
-  .what summary { cursor: pointer; }
+  .what summary { cursor: pointer; display: inline-flex; align-items: center; gap: 4px; list-style: none; }
+  .what summary::-webkit-details-marker { display: none; }
+  .what[open] .chev { transform: rotate(90deg); }
   .what p { margin: 6px 0 0; }
-  .del { display: block; padding: 8px 0 0; }
+  .del { padding: 8px 0 0; }
   .nsz-list { display: flex; flex-direction: column; gap: 12px; overflow-y: auto; flex: 1; min-height: 0; }
   .group > summary { list-style: none; cursor: pointer; color: var(--fg); }
   .group > summary::-webkit-details-marker { display: none; }
@@ -877,7 +1024,6 @@
   .fill { height: 100%; background: var(--fg); transition: width 0.3s; }
   .fill.indet { width: 35%; animation: slide 1.2s ease-in-out infinite alternate; }
   @keyframes slide { from { margin-left: 0; } to { margin-left: 65%; } }
-  @media (prefers-reduced-motion: reduce) { .fill.indet { animation: none; width: 100%; opacity: 0.5; } .rail-btn.spin :global(.icon) { animation: none; } .chev, button, .row { transition: none; } }
   .nsz .quiet { background: transparent; color: var(--muted); opacity: 0; }
   .nsz .row:hover .quiet, .nsz .row:focus-within .quiet { opacity: 1; }
   .nsz .quiet:hover { color: var(--fg); background: var(--ghost); }
@@ -887,26 +1033,59 @@
   .toasts { position: fixed; right: 20px; bottom: 20px; z-index: 10; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; width: min(440px, calc(100vw - 40px)); pointer-events: none; }
   .toasts > * { pointer-events: auto; width: 100%; }
   .toast { display: flex; align-items: center; gap: 10px; box-sizing: border-box; width: 100%; padding: 10px 12px 10px 16px; border-radius: 12px; background: var(--toast); color: var(--fg); border: 1px solid var(--border); box-shadow: var(--shadow); backdrop-filter: blur(16px); }
+  .toast { transition: opacity 0.16s ease, transform 0.16s ease; }
+  @starting-style { .toast { opacity: 0; transform: translateY(8px); } }
   .toast.err { border-color: var(--danger); box-shadow: 0 0 0 3px var(--danger-bg), var(--shadow); }
   .toast.err .ico { color: var(--danger); }
   .toast.ok { border-color: var(--ok); box-shadow: 0 0 0 3px var(--ok-bg), var(--shadow); }
   .toast.ok .ico { color: var(--ok); }
   .toast.dl { flex-direction: column; align-items: stretch; gap: 0; border-color: var(--accent); }
-  .toast .x { margin-left: auto; background: transparent; color: inherit; padding: 0 6px; font-size: 16px; }
+  .toast .x { margin-left: auto; background: transparent; color: inherit; padding: 4px; display: inline-flex; }
+  .ico { display: inline-flex; }
 
   .modal { background: var(--toast); color: var(--fg); border: 1px solid var(--border); border-radius: 16px; padding: 20px 22px; width: min(520px, 90vw); max-height: 80vh; box-shadow: var(--shadow); }
   .modal[open] { display: flex; flex-direction: column; }
   .modal::backdrop { background: var(--backdrop); backdrop-filter: blur(4px); }
+  .modal[open], .menu:popover-open { transition: opacity 0.16s ease, transform 0.16s ease; }
+  @starting-style { .modal[open], .menu:popover-open { opacity: 0; transform: translateY(6px) scale(0.98); } }
   .modal h3 { margin: 0 0 4px; font-size: 16px; }
   .rootlist { overflow-y: auto; display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
+  .rootlist label { padding: 8px 10px; border-radius: 8px; background: var(--input); border: 1px solid var(--border-soft); }
+  .rootlist label .muted { margin-left: auto; font-size: 12px; }
   .actions { display: flex; justify-content: flex-end; gap: 8px; }
-  .guide ol { margin: 12px 0 16px; padding-left: 20px; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; }
-  .upd-notes { max-height: 240px; overflow-y: auto; white-space: pre-wrap; font: inherit; margin: 8px 0 16px; }
-  .guide li b { display: block; }
+  .guide ol { margin: 14px 0 18px; padding: 0; list-style: none; counter-reset: step; display: flex; flex-direction: column; gap: 14px; overflow-y: auto; }
+  .guide li { counter-increment: step; display: grid; grid-template-columns: 24px 1fr; column-gap: 12px; }
+  .guide li::before { content: counter(step); grid-row: span 2; width: 24px; height: 24px; border-radius: 50%; background: var(--badge); color: var(--fg-soft); font-size: 12px; font-weight: 600; display: grid; place-items: center; }
+  .guide li > * { grid-column: 2; }
+  .guide li b { font-weight: 600; }
+  .upd-notes { max-height: 240px; overflow-y: auto; white-space: pre-wrap; font: inherit; font-size: 13px; margin: 8px 0 16px; padding: 10px 12px; background: var(--input); border: 1px solid var(--border-soft); border-radius: 8px; }
+  .logo-btn { width: 38px; height: 38px; justify-content: center; padding: 0; margin-bottom: 10px; background: transparent; border-radius: 10px; }
+  .logo-btn:hover:not(:disabled) { background: var(--ghost); }
+  .menu { position: fixed; inset: auto; top: 12px; left: 62px; margin: 0; padding: 6px; min-width: 210px; background: var(--toast); color: var(--fg); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); }
+  .menu:popover-open { display: flex; flex-direction: column; gap: 2px; }
+  .menu button { background: transparent; justify-content: flex-start; width: 100%; padding: 8px 10px; font-size: 13px; color: var(--fg); }
+  .menu button:hover { background: var(--ghost); }
+  .settings { width: min(680px, 92vw); max-height: 86vh; }
+  .modal:focus-visible { outline: none; }
+  .sbody { overflow-y: auto; display: flex; flex-direction: column; margin: 8px -22px 16px; padding: 0 22px; }
+  .srow { display: grid; grid-template-columns: 150px 1fr; gap: 16px; padding: 14px 0; border-bottom: 1px solid var(--border-soft); }
+  .srow:last-child { border-bottom: 0; }
+  .srow h4 { margin: 0; padding-top: 4px; font-size: 13px; font-weight: 500; color: var(--fg-soft); }
+  .sctl { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; min-width: 0; }
+  .sctl p { margin: 0; }
+  .settings .actions { align-items: center; }
+  .settings .actions p { margin: 0 auto 0 0; }
+  .dirs { display: flex; flex-direction: column; gap: 8px; width: 100%; }
+  .dirrow { display: flex; align-items: center; gap: 10px; }
+  .dirrow b { width: 64px; flex-shrink: 0; font-weight: 600; }
+  .dirrow .path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .btns { display: flex; flex-wrap: wrap; gap: 8px; }
+  .serr { color: var(--danger); font-size: 12px; }
 
   @media (forced-colors: active) {
     button, .badge, .row, .toast, .panel, .game, .search { border: 1px solid CanvasText; }
     .game.sel, .rail-btn[aria-current="page"], .seg button[aria-pressed="true"] { outline: 2px solid Highlight; }
     .fill { background: Highlight; }
   }
+  @media (prefers-reduced-motion: reduce) { .fill.indet { animation: none; width: 100%; opacity: 0.5; } .rail-btn.spin :global(.icon), .sub.run :global(.icon) { animation: none; } .chev, button, .row, .modal, .menu, .toast { transition: none; } button:active { transform: none; } }
 </style>

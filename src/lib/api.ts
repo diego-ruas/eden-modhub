@@ -49,6 +49,8 @@ export type RomFile = { path: string; name: string; ext: string; size: number };
 export type NszOp = "compress" | "decompress" | "verify" | "info";
 export type NszResult = { ok: boolean; log: string; output: string | null; outputSize: number | null };
 export type UpdateCheck = { current: string; version: string | null; notes: string | null };
+export type EmuDir = { kind: Emu; dir: string | null };
+export type StorageInfo = { cacheBytes: number; toolsBytes: number };
 
 export const norm = (s: string) =>
   s
@@ -68,13 +70,17 @@ export const githubUrl = (m: ModEntry) =>
 export const api = {
   getEmu: () => invoke<{ kind: Emu; dir: string | null }>("get_emu"),
   setEmulator: (kind: Emu) => invoke<void>("set_emulator", { kind }),
-  setEmuDir: (path: string) => invoke<void>("set_emu_dir", { path }),
+  setEmuDir: (kind: Emu, path: string) => invoke<void>("set_emu_dir", { kind, path }),
   getCatalog: (force: boolean) => invoke<Catalog>("get_catalog", { force }),
   listGames: () => invoke<Game[]>("list_games"),
   gameCover: (tid: string) => invoke<string | null>("game_cover", { tid }),
   listInstalled: (tid: string) => invoke<Installed[]>("list_installed", { tid }),
   checkUpdate: () => invoke<UpdateCheck>("check_update"),
   installUpdate: () => invoke<void>("install_update"),
+  getEmuDirs: () => invoke<EmuDir[]>("get_emu_dirs"),
+  storageInfo: () => invoke<StorageInfo>("storage_info"),
+  clearCache: () => invoke<void>("clear_cache"),
+  removeTools: () => invoke<void>("remove_tools"),
   prepareInstall: (tid: string, modId: string) => invoke<Prepared>("prepare_install", { tid, modId }),
   commitInstall: (token: string, keys: string[]) => invoke<Installed[]>("commit_install", { token, keys }),
   cancelInstall: (token: string) => invoke<void>("cancel_install", { token }),
