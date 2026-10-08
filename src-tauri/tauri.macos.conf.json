@@ -2,7 +2,7 @@
   "app": {
     "windows": [
       {
-        "title": "Eden ModHub",
+        "title": "Eden Mod Manager",
         "width": 1100,
         "height": 720,
         "minWidth": 900,

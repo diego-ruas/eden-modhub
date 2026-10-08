@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Eden ModHub: desktop app (Tauri 2 + SvelteKit 5 + Rust) to browse, install and manage Switch mods for Eden, yuzu and Ryujinx, with an optional NSZ compressor and a self-updater. Repo: `diego-ruas/eden-modhub`.
+Eden Mod Manager (formerly Eden ModHub; crate, binary, identifier and release asset names keep the `eden-modhub` / `EdenModHub` naming on purpose): desktop app (Tauri 2 + SvelteKit 5 + Rust) to browse, install and manage Switch mods for Eden, yuzu and Ryujinx, with an optional NSZ compressor and a self-updater. Repo: `pendiego/Eden-Mod-Manager`.
 
 ## Layout
 
@@ -74,5 +74,5 @@ The guard reads the current branch before each command. It blocks `git commit` o
 
 - The only permanent Rust test of note is `update::tests::verify_accepts_signed_and_rejects_tampered` (minisign verification, uses a throwaway test keypair).
 - Inspecting the running app: launch with `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222` and drive it over CDP at `http://127.0.0.1:9222/json`.
-- Windows NSIS installs are per-user: registry under `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall`, files in `%LOCALAPPDATA%\Eden ModHub`.
+- Windows NSIS installs are per-user: registry under `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall`, files in `%LOCALAPPDATA%\Eden Mod Manager`.
 - Linux and macOS builds are only verified through CI and the `latest.json` platform keys.

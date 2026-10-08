@@ -3,7 +3,7 @@ use tauri::{AppHandle, Emitter};
 use tauri_plugin_updater::UpdaterExt;
 
 #[cfg(windows)]
-const REPO: &str = "diego-ruas/eden-modhub";
+const REPO: &str = "pendiego/Eden-Mod-Manager";
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]

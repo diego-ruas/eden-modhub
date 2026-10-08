@@ -1,14 +1,14 @@
 <div align="center">
 
-<img src="static/logo.png" alt="Eden ModHub" width="96" />
+<img src="static/logo.png" alt="Eden Mod Manager" width="96" />
 
-# Eden ModHub
+# Eden Mod Manager
 
 **Browse, install and manage Nintendo Switch mods for Eden, yuzu and Ryujinx.**<br />
 Optional built-in NSZ compressor. Windows, Linux and macOS.
 
-[![Build](https://github.com/diego-ruas/eden-modhub/actions/workflows/build.yml/badge.svg)](https://github.com/diego-ruas/eden-modhub/actions/workflows/build.yml)
-[![Release](https://img.shields.io/github/v/release/diego-ruas/eden-modhub?color=white)](https://github.com/diego-ruas/eden-modhub/releases/latest)
+[![Build](https://github.com/pendiego/Eden-Mod-Manager/actions/workflows/build.yml/badge.svg)](https://github.com/pendiego/Eden-Mod-Manager/actions/workflows/build.yml)
+[![Release](https://img.shields.io/github/v/release/pendiego/Eden-Mod-Manager?color=white)](https://github.com/pendiego/Eden-Mod-Manager/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-white.svg)](LICENSE)
 
 </div>
@@ -61,7 +61,7 @@ Optional built-in NSZ compressor. Windows, Linux and macOS.
 
 ## Download
 
-Grab the latest build from the [Releases page](https://github.com/diego-ruas/eden-modhub/releases/latest).
+Grab the latest build from the [Releases page](https://github.com/pendiego/Eden-Mod-Manager/releases/latest).
 
 | Platform | File | Notes |
 |---|---|---|
@@ -120,7 +120,7 @@ Built with [Tauri 2](https://tauri.app), [SvelteKit](https://svelte.dev) and Rus
 
 Mod data comes from [Switch-Emulator-Mod-Database](https://github.com/ADEMOLA200/Switch-Emulator-Mod-Database), [theboy181/switch-ptchtxt-mods](https://github.com/theboy181/switch-ptchtxt-mods) and [Switch-Mods-Wiki-Archive](https://github.com/amakvana/Switch-Mods-Wiki-Archive). Compression by [nsz](https://github.com/nicoboss/nsz). Cover art from [nlib](https://api.nlib.cc).
 
-Eden ModHub is not affiliated with Nintendo or any emulator project. Use it only with games and keys you legally own.
+Eden Mod Manager is not affiliated with Nintendo or any emulator project. Use it only with games and keys you legally own.
 
 ## License
 

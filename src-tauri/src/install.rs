@@ -353,7 +353,7 @@ pub fn uninstall(app: AppHandle, tid: String, folder: String) -> Result<(), Stri
     let pos = m
         .iter()
         .position(|i| i.emu == emu.kind && i.tid == tid && i.folder == folder)
-        .ok_or("Pasta não foi instalada pelo ModHub")?;
+        .ok_or("Pasta não foi instalada pelo Eden Mod Manager")?;
     match std::fs::remove_dir_all(emu.tid_dir(&tid).join(&folder)) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}

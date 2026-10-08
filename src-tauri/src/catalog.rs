@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::sync::LazyLock;
 
-pub const UA: &str = "Eden-ModHub";
+pub const UA: &str = "Eden-Mod-Manager";
 
 /// Repositórios de mods, em ordem de prioridade (o primeiro vence duplicatas).
 /// Wiki = espelho do wiki oficial do yuzu (sucessor do LexouilleTM/yuzu-mods-archive, removido).
