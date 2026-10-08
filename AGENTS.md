@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Eden Mod Manager (formerly Eden ModHub; crate, binary, identifier and release asset names keep the `eden-modhub` / `EdenModHub` naming on purpose): desktop app (Tauri 2 + SvelteKit 5 + Rust) to browse, install and manage Switch mods for Eden, yuzu and Ryujinx, with an optional NSZ compressor and a self-updater. Repo: `pendiego/Eden-Mod-Manager`.
+Eden Mod Manager (formerly Eden ModHub; the crate, binary and identifier keep the `eden-modhub` naming on purpose): desktop app (Tauri 2 + SvelteKit 5 + Rust) to browse, install and manage Switch mods for Eden, yuzu and Ryujinx, with an optional NSZ compressor and a self-updater. Repo: `pendiego/Eden-Mod-Manager`.
 
 ## Layout
 
@@ -48,7 +48,7 @@ Run `npm run check` and `cargo test` after code changes. Shell is bash on Window
 
 ## Portable mode (Windows)
 
-A file named `portable` next to the exe makes `portable_dir()` return the exe folder; data then lives in `data/{config,data,cache}`. The portable updater downloads `EdenModHub-portable.zip` + `.sig` from the release, verifies it against the `pubkey` in `tauri.conf.json`, renames the running exe to `.exe.old`, writes the new one and relaunches. `update::cleanup_old_exe` removes the leftover.
+A file named `portable` next to the exe makes `portable_dir()` return the exe folder; data then lives in `data/{config,data,cache}`. The portable updater downloads `EdenModManager-portable.zip` + `.sig` from the release, verifies it against the `pubkey` in `tauri.conf.json`, renames the running exe to `.exe.old`, writes the new one and relaunches. `update::cleanup_old_exe` removes the leftover. CI also attaches a legacy `EdenModHub-portable.zip` (inner `EdenModHub.exe`) because portable builds <= 0.2.2 look for that name; drop it once those are gone.
 
 ## Updater and releases
 

@@ -55,7 +55,7 @@ pub async fn install_update(app: AppHandle) -> Result<(), String> {
 async fn replace_portable(app: &AppHandle, version: &str) -> Result<(), String> {
     use std::io::Read;
     let fail = |e: &dyn std::fmt::Display| format!("Falha ao atualizar: {e}");
-    let url = format!("https://github.com/{REPO}/releases/download/v{version}/EdenModHub-portable.zip");
+    let url = format!("https://github.com/{REPO}/releases/download/v{version}/EdenModManager-portable.zip");
     let zip_path = crate::app_dir(app, crate::Dir::Cache)?.join("update.zip");
     crate::install::download(&url, &zip_path, app).await?;
     let sig = reqwest::Client::new()
@@ -81,7 +81,7 @@ async fn replace_portable(app: &AppHandle, version: &str) -> Result<(), String> 
     verify(&bytes, &sig, pubkey)?;
     let mut exe = Vec::new();
     let mut z = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).map_err(|e| fail(&e))?;
-    z.by_name("EdenModHub.exe")
+    z.by_name("EdenModManager.exe")
         .map_err(|e| fail(&e))?
         .read_to_end(&mut exe)
         .map_err(|e| fail(&e))?;

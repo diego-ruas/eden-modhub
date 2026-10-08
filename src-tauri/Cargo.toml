@@ -1,6 +1,6 @@
 [package]
 name = "eden-modhub"
-version = "0.2.2"
+version = "0.2.3"
 description = "Instalador de mods e compressor NSZ para Eden, yuzu e Ryujinx"
 authors = ["pendiego"]
 license = "MIT"

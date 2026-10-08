@@ -66,7 +66,7 @@ Grab the latest build from the [Releases page](https://github.com/pendiego/Eden-
 | Platform | File | Notes |
 |---|---|---|
 | Windows | `*-setup.exe` | Installer |
-| Windows | `EdenModHub-portable.zip` | No install; keeps all data next to the `.exe` |
+| Windows | `EdenModManager-portable.zip` | No install; keeps all data next to the `.exe` |
 | Linux | `.deb`, `.AppImage` | Needs WebKitGTK 4.1 |
 | macOS | `.dmg` | Apple Silicon. Not notarized: allow it in System Settings on first launch |
 
@@ -87,7 +87,7 @@ A short in-app guide opens on first launch. Click the app icon at the top left f
 
 ### Portable mode (Windows)
 
-Keep a file named `portable` next to `EdenModHub.exe` and the app stores its settings, cache and tools in a `data/` folder beside it. Remove the file to go back to the regular user profile.
+Keep a file named `portable` next to `EdenModManager.exe` and the app stores its settings, cache and tools in a `data/` folder beside it. Remove the file to go back to the regular user profile.
 
 ## NSZ compressor
 
