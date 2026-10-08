@@ -15,6 +15,27 @@ Optional built-in NSZ compressor. Windows, Linux and macOS.
 
 ---
 
+## Screenshots
+
+<p align="center">
+  <img src="docs/screenshots/mods.png" alt="Installed and available mods for a game" width="720" />
+</p>
+
+<table>
+  <tr>
+    <td><img src="docs/screenshots/games.png" alt="Game list" /></td>
+    <td><img src="docs/screenshots/nsz.png" alt="NSZ compressor" /></td>
+  </tr>
+  <tr>
+    <td align="center">Your games</td>
+    <td align="center">NSZ compressor</td>
+  </tr>
+</table>
+
+<p align="center">
+  <img src="docs/screenshots/guide.png" alt="Getting started guide" width="480" />
+</p>
+
 ## Features
 
 - **Finds your emulator automatically.** Detects the data folder (including Flatpak and portable `user` setups) and your game folders.
@@ -24,6 +45,7 @@ Optional built-in NSZ compressor. Windows, Linux and macOS.
 - **Safe installs.** Pick which variants of a package to install (resolutions, FPS, etc.), and remove them again with one click.
 - **Optional NSZ compressor.** Compress NSP/XCI and decompress NSZ/XCZ, with progress and verification. The tool is downloaded only on first use.
 - **Bilingual UI.** English and Portuguese.
+- **Auto-update.** Checks for new versions on launch and updates in one click (the portable build replaces itself, with signature verification).
 
 ## Download
 
