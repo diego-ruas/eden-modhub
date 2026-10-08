@@ -40,6 +40,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
+          releaseName: Eden ModHub ${{ github.ref_name }}
           generateReleaseNotes: true
           args: --config src-tauri/tauri.updater.conf.json --bundles ${{ matrix.bundles }}
       - name: Windows portátil (exe + arquivo "portable")
