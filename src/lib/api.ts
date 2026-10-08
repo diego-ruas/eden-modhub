@@ -48,6 +48,7 @@ export type Emu = "eden" | "yuzu" | "ryujinx";
 export type RomFile = { path: string; name: string; ext: string; size: number };
 export type NszOp = "compress" | "decompress" | "verify" | "info";
 export type NszResult = { ok: boolean; log: string; output: string | null; outputSize: number | null };
+export type UpdateCheck = { current: string; version: string | null; notes: string | null };
 
 export const norm = (s: string) =>
   s
@@ -72,6 +73,8 @@ export const api = {
   listGames: () => invoke<Game[]>("list_games"),
   gameCover: (tid: string) => invoke<string | null>("game_cover", { tid }),
   listInstalled: (tid: string) => invoke<Installed[]>("list_installed", { tid }),
+  checkUpdate: () => invoke<UpdateCheck>("check_update"),
+  installUpdate: () => invoke<void>("install_update"),
   prepareInstall: (tid: string, modId: string) => invoke<Prepared>("prepare_install", { tid, modId }),
   commitInstall: (token: string, keys: string[]) => invoke<Installed[]>("commit_install", { token, keys }),
   cancelInstall: (token: string) => invoke<void>("cancel_install", { token }),

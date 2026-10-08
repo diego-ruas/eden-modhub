@@ -2,6 +2,7 @@ mod catalog;
 mod emu;
 mod install;
 mod nsz;
+mod update;
 
 use catalog::Catalog;
 use emu::{Emu, Kind};
@@ -29,11 +30,16 @@ pub enum Dir {
     Cache,
 }
 
-/// Modo portátil: se existir um arquivo `portable` ao lado do executável, tudo
-/// (configurações, cache, ferramentas) fica em `data/` ao lado dele, sem tocar no perfil do usuário.
+/// Pasta do executável quando o modo portátil está ativo (arquivo `portable` ao lado do exe).
+pub fn portable_dir() -> Option<PathBuf> {
+    let d = std::env::current_exe().ok()?.parent()?.to_path_buf();
+    d.join("portable").exists().then_some(d)
+}
+
+/// Modo portátil: tudo (configurações, cache, ferramentas) fica em `data/` ao lado do exe,
+/// sem tocar no perfil do usuário.
 pub fn app_dir(app: &AppHandle, kind: Dir) -> Result<PathBuf, String> {
-    let exe_dir = std::env::current_exe().ok().and_then(|e| e.parent().map(|p| p.to_path_buf()));
-    if let Some(d) = exe_dir.filter(|d| d.join("portable").exists()) {
+    if let Some(d) = portable_dir() {
         return Ok(d.join("data").join(match kind {
             Dir::Config => "config",
             Dir::Data => "data",
@@ -189,6 +195,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(CatalogState::default())
         .manage(install::Pending::default())
         .manage(install::PeekCache::default())
@@ -196,6 +203,7 @@ pub fn run() {
             if let Some(e) = current_emu(app.handle()) {
                 install::cleanup_tmp(&e.mods_dir());
             }
+            update::cleanup_old_exe();
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -215,6 +223,8 @@ pub fn run() {
             nsz::nsz_run,
             nsz::nsz_can_verify,
             nsz::list_roms,
+            update::check_update,
+            update::install_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
