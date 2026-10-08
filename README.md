@@ -32,6 +32,17 @@ Optional built-in NSZ compressor. Windows, Linux and macOS.
   </tr>
 </table>
 
+<table>
+  <tr>
+    <td><img src="docs/screenshots/menu.png" alt="App menu" /></td>
+    <td><img src="docs/screenshots/settings.png" alt="Settings" /></td>
+  </tr>
+  <tr>
+    <td align="center">App menu</td>
+    <td align="center">Settings</td>
+  </tr>
+</table>
+
 <p align="center">
   <img src="docs/screenshots/guide.png" alt="Getting started guide" width="480" />
 </p>
@@ -45,7 +56,8 @@ Optional built-in NSZ compressor. Windows, Linux and macOS.
 - **Safe installs.** Pick which variants of a package to install (resolutions, FPS, etc.), and remove them again with one click.
 - **Optional NSZ compressor.** Compress NSP/XCI and decompress NSZ/XCZ, with progress and verification. The tool is downloaded only on first use.
 - **Bilingual UI.** English and Portuguese.
-- **Auto-update.** Checks for new versions on launch and updates in one click (the portable build replaces itself, with signature verification).
+- **Auto-update.** Checks for new versions on launch (can be turned off in Settings) and updates in one click (the portable build replaces itself, with signature verification).
+- **Settings.** Language, per-emulator data folders, cache and NSZ tool management, update preferences.
 
 ## Download
 
@@ -64,7 +76,7 @@ Grab the latest build from the [Releases page](https://github.com/diego-ruas/ede
 2. Select a game from the list.
 3. Click **Install** on a mod, then enable it in the emulator: *Configure game → Add-Ons*.
 
-A short in-app guide opens on first launch (the **?** button reopens it).
+A short in-app guide opens on first launch. Click the app icon at the top left for the menu (Settings, Guide, Check for updates).
 
 ### Default data folders
 

@@ -2,6 +2,7 @@ mod catalog;
 mod emu;
 mod install;
 mod nsz;
+mod prefs;
 mod update;
 
 use catalog::Catalog;
@@ -74,9 +75,7 @@ fn save_settings(app: &AppHandle, s: &Settings) -> Result<(), String> {
     std::fs::write(sp, json).map_err(|e| e.to_string())
 }
 
-fn current_emu(app: &AppHandle) -> Option<Emu> {
-    let s = load_settings(app);
-    let kind = s.emulator;
+fn emu_for(s: &Settings, kind: Kind) -> Option<Emu> {
     let dir = s
         .dirs
         .get(&kind)
@@ -84,6 +83,11 @@ fn current_emu(app: &AppHandle) -> Option<Emu> {
         .filter(|p| kind.validate(p))
         .or_else(|| kind.default_dir())?;
     Some(Emu { kind, dir })
+}
+
+fn current_emu(app: &AppHandle) -> Option<Emu> {
+    let s = load_settings(app);
+    emu_for(&s, s.emulator)
 }
 
 pub fn resolve_emu(app: &AppHandle) -> Result<Emu, String> {
@@ -112,13 +116,27 @@ fn set_emulator(app: AppHandle, kind: Kind) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn set_emu_dir(app: AppHandle, path: String) -> Result<(), String> {
+fn set_emu_dir(app: AppHandle, kind: Kind, path: String) -> Result<(), String> {
     let mut s = load_settings(&app);
-    if !s.emulator.validate(std::path::Path::new(&path)) {
-        return Err(s.emulator.invalid_msg().into());
+    if !kind.validate(std::path::Path::new(&path)) {
+        return Err(kind.invalid_msg().into());
     }
-    s.dirs.insert(s.emulator, path);
+    s.dirs.insert(kind, path);
     save_settings(&app, &s)
+}
+
+#[derive(Serialize)]
+struct EmuDir {
+    kind: Kind,
+    dir: Option<String>,
+}
+
+#[tauri::command]
+fn get_emu_dirs(app: AppHandle) -> Vec<EmuDir> {
+    let s = load_settings(&app);
+    [Kind::Eden, Kind::Yuzu, Kind::Ryujinx]
+        .map(|kind| EmuDir { kind, dir: emu_for(&s, kind).map(|e| e.dir.to_string_lossy().into_owned()) })
+        .into()
 }
 
 #[tauri::command]
@@ -225,6 +243,10 @@ pub fn run() {
             nsz::list_roms,
             update::check_update,
             update::install_update,
+            prefs::storage_info,
+            prefs::clear_cache,
+            prefs::remove_tools,
+            get_emu_dirs,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
