@@ -47,11 +47,15 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          New-Item -ItemType Directory portable | Out-Null
-          Copy-Item src-tauri/target/release/eden-modhub.exe portable/EdenModHub.exe
-          New-Item portable/portable -ItemType File | Out-Null
-          Compress-Archive portable/* EdenModHub-portable.zip
-          npx tauri signer sign -k "$env:TAURI_SIGNING_PRIVATE_KEY" -p "$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD" EdenModHub-portable.zip
+          # EdenModManager-portable.zip: nome atual. EdenModHub-portable.zip: legado, só para
+          # o atualizador dos portáteis já distribuídos (<= 0.2.2), que procuram esse nome e EdenModHub.exe.
+          foreach ($n in "EdenModManager", "EdenModHub") {
+            New-Item -ItemType Directory "portable-$n" | Out-Null
+            Copy-Item src-tauri/target/release/eden-modhub.exe "portable-$n/$n.exe"
+            New-Item "portable-$n/portable" -ItemType File | Out-Null
+            Compress-Archive "portable-$n/*" "$n-portable.zip"
+            npx tauri signer sign -k "$env:TAURI_SIGNING_PRIVATE_KEY" -p "$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD" "$n-portable.zip"
+          }
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
@@ -60,6 +64,8 @@ jobs:
           name: eden-modhub-${{ matrix.os }}
           path: |
             src-tauri/target/release/bundle/*/*
+            EdenModManager-portable.zip
+            EdenModManager-portable.zip.sig
             EdenModHub-portable.zip
             EdenModHub-portable.zip.sig
           if-no-files-found: ignore
@@ -68,5 +74,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
+            EdenModManager-portable.zip
+            EdenModManager-portable.zip.sig
             EdenModHub-portable.zip
             EdenModHub-portable.zip.sig
