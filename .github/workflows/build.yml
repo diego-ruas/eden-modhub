@@ -14,8 +14,11 @@ jobs:
       matrix:
         include:
           - os: windows-latest
+            bundles: nsis
           - os: ubuntu-22.04
+            bundles: appimage,deb
           - os: macos-latest # Apple Silicon; nsz não tem binário para Mac Intel
+            bundles: app,dmg
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -30,7 +33,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libgtk-3-dev
       - run: npm ci
-      - run: npm run tauri build
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
+          generateReleaseNotes: true
+          args: --config src-tauri/tauri.updater.conf.json --bundles ${{ matrix.bundles }}
       - name: Windows portátil (exe + arquivo "portable")
         if: runner.os == 'Windows'
         shell: pwsh
@@ -39,21 +50,22 @@ jobs:
           Copy-Item src-tauri/target/release/eden-modhub.exe portable/EdenModHub.exe
           New-Item portable/portable -ItemType File | Out-Null
           Compress-Archive portable/* EdenModHub-portable.zip
+          npx tauri signer sign -k "$env:TAURI_SIGNING_PRIVATE_KEY" -p "$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD" EdenModHub-portable.zip
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
       - uses: actions/upload-artifact@v4
         with:
           name: eden-modhub-${{ matrix.os }}
           path: |
             src-tauri/target/release/bundle/*/*
             EdenModHub-portable.zip
+            EdenModHub-portable.zip.sig
           if-no-files-found: ignore
-      - name: Anexar à Release
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Anexar portátil à Release
+        if: startsWith(github.ref, 'refs/tags/v') && runner.os == 'Windows'
         uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
           files: |
-            src-tauri/target/release/bundle/nsis/*.exe
-            src-tauri/target/release/bundle/deb/*.deb
-            src-tauri/target/release/bundle/appimage/*.AppImage
-            src-tauri/target/release/bundle/dmg/*.dmg
             EdenModHub-portable.zip
+            EdenModHub-portable.zip.sig

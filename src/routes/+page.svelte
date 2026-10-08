@@ -7,7 +7,7 @@
   import {
     api, githubUrl, modPath, SOURCE_LABEL, norm,
     type Catalog, type Game, type Installed, type ModEntry, type NszOp, type Prepared, type RomFile,
-    type Emu, type RootInfo, type Source,
+    type Emu, type RootInfo, type Source, type UpdateCheck,
   } from "$lib/api";
   import { EMU_HINT, EMU_NAME, i18n, locale, setLang, t, trErr, type Lang } from "$lib/i18n.svelte";
 
@@ -31,6 +31,8 @@
   let prepared = $state<Prepared | null>(null);
   let dlg = $state<HTMLDialogElement>();
   let guide = $state<HTMLDialogElement>();
+  let upd = $state<HTMLDialogElement>();
+  let update = $state<UpdateCheck | null>(null);
   let checked = $state<Record<string, boolean>>({});
   let tab = $state<"mods" | "nsz">("mods");
   let roms = $state<RomFile[]>([]);
@@ -81,6 +83,7 @@
     plus: "M12 5v14 M5 12h14",
     chev: "M9 6l6 6-6 6",
     help: "M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18z M9.6 9.5a2.5 2.5 0 1 1 3.5 2.3c-.7.4-1.1.9-1.1 1.7 M12 17h.01",
+    update: "M12 4v11 M7 10l5 5 5-5 M5 20h14",
   };
   const initials = (s: string) =>
     s.split(/\s+/).map((w) => w.match(/[\p{L}\p{N}]/u)?.[0] ?? "").filter(Boolean).slice(0, 2).join("").toUpperCase() || "?";
@@ -246,6 +249,20 @@
     }
   }
 
+  async function checkUpdate() {
+    const r = await run(() => api.checkUpdate());
+    if (!r) return;
+    if (r.version) { update = r; upd?.showModal(); } else notice = t("updLatest", { v: r.current });
+  }
+  async function installUpdate() {
+    upd?.close();
+    busy = true;
+    progress = { received: 0, total: null };
+    await run(() => api.installUpdate()); // em caso de sucesso o app fecha/reinicia; daqui pra baixo só em falha
+    busy = false;
+    progress = null;
+  }
+
   // Capas que o emulador não guardou: busca uma a uma (sem rajada); cada jogo é tentado uma vez por sessão.
   const coverCache = new Map<string, string | null>();
   async function loadCovers() {
@@ -407,6 +424,7 @@
       nszLog = (nszLog + e.payload + "\n").slice(-6000);
     });
     reloadEmu();
+    api.checkUpdate().then((r) => { if (r.version && !guide?.open) { update = r; upd?.showModal(); } }).catch(() => {});
     return () => {
       un.then((f) => f());
       unNsz.then((f) => f());
@@ -457,6 +475,7 @@
     <span class="spacer"></span>
     <button class="rail-btn" class:spin={loadingCatalog} title={loadingCatalog ? t("refreshing") : t("refreshCatalog")} aria-label={t("refreshCatalog")} disabled={busy || !emuDir} aria-busy={loadingCatalog} onclick={() => loadCatalog(true)}>{@render icon(ICON.refresh)}</button>
     <button class="rail-btn" title={t("guideOpen")} aria-label={t("guideOpen")} onclick={() => guide?.showModal()}>{@render icon(ICON.help)}</button>
+    <button class="rail-btn" title={t("updCheck")} aria-label={t("updCheck")} disabled={busy} onclick={checkUpdate}>{@render icon(ICON.update)}</button>
     <button class="rail-btn lang" aria-label={t("language")} title={t("language")} onclick={() => setLang(i18n.lang === "pt" ? "en" : "pt")}>{i18n.lang === "pt" ? "PT" : "EN"}</button>
   </nav>
   <div class="content">
@@ -704,6 +723,15 @@
     </ol>
     <div class="actions"><button class="primary" onclick={() => guide?.close()}>{t("guideDone")}</button></div>
   </dialog>
+
+  <dialog bind:this={upd} class="modal" aria-labelledby="upd-title">
+    {#if update?.version}
+      <h3 id="upd-title">{t("updTitle", { v: update.version })}</h3>
+      <p class="muted">{t("updBody", { cur: update.current })}</p>
+      {#if update.notes}<pre class="upd-notes">{update.notes}</pre>{/if}
+      <div class="actions"><button class="ghost" onclick={() => upd?.close()}>{t("updLater")}</button><button class="primary" onclick={installUpdate}>{t("updNow")}</button></div>
+    {/if}
+  </dialog>
 </div>
 
 <style>
@@ -873,6 +901,7 @@
   .rootlist { overflow-y: auto; display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
   .actions { display: flex; justify-content: flex-end; gap: 8px; }
   .guide ol { margin: 12px 0 16px; padding-left: 20px; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; }
+  .upd-notes { max-height: 240px; overflow-y: auto; white-space: pre-wrap; font: inherit; margin: 8px 0 16px; }
   .guide li b { display: block; }
 
   @media (forced-colors: active) {

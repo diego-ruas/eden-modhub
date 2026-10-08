@@ -1,6 +1,6 @@
 [package]
 name = "eden-modhub"
-version = "0.1.0"
+version = "0.2.0"
 description = "Instalador de mods e compressor NSZ para Eden, yuzu e Ryujinx"
 authors = ["diego-ruas"]
 license = "MIT"
@@ -30,6 +30,8 @@ walkdir = "2"
 parking_lot = "0.12"
 base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
+tauri-plugin-updater = "2"
+minisign-verify = "0.2"
 
 [profile.release]
 codegen-units = 1
