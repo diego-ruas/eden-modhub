@@ -440,7 +440,7 @@
 
   async function remove(i: Installed) {
     const ok = await confirm(t("confirmRemove", { name: i.folder }), {
-      title: "Eden ModHub",
+      title: "Eden Mod Manager",
       kind: "warning",
       okLabel: t("remove"),
       cancelLabel: t("cancel"),
@@ -519,7 +519,7 @@
 {/snippet}
 
 <div class="app">
-  <nav class="rail" aria-label="ModHub">
+  <nav class="rail" aria-label="Eden Mod Manager">
     <button class="logo-btn" popovertarget="app-menu" aria-haspopup="menu" aria-label={t("menu")} title={t("menu")}><img class="logo" src="/logo.png" alt="" /></button>
     <div id="app-menu" class="menu" popover role="menu">
       <button role="menuitem" popovertarget="app-menu" popovertargetaction="hide" onclick={openSettings}>{@render icon(ICON.settings)}{t("settings")}</button>
@@ -851,8 +851,8 @@
         <h4>{t("setAbout")}</h4>
         <div class="sctl">
           <div class="btns">
-            <button onclick={() => openUrl("https://github.com/diego-ruas/eden-modhub")}>{t("setRepo")}</button>
-            <button onclick={() => openUrl("https://github.com/diego-ruas/eden-modhub/releases/latest")}>{t("setReleases")}</button>
+            <button onclick={() => openUrl("https://github.com/pendiego/Eden-Mod-Manager")}>{t("setRepo")}</button>
+            <button onclick={() => openUrl("https://github.com/pendiego/Eden-Mod-Manager/releases/latest")}>{t("setReleases")}</button>
           </div>
           <p class="muted small">{t("setLegal")}</p>
         </div>
