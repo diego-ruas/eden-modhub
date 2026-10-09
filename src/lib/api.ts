@@ -1,20 +1,24 @@
 import { invoke } from "@tauri-apps/api/core";
 
-export type Source = "official" | "theboy181" | "wiki" | "ptbr";
+export type Source = "official" | "theboy181" | "wiki" | "ptbr" | "gamebanana";
 // Espelha catalog.rs: repositório, branch e prefixo do id de cada fonte.
 const SOURCES: Record<Source, { repo: string; branch: string; label: string }> = {
   official: { repo: "ADEMOLA200/Switch-Emulator-Mod-Database", branch: "develop", label: "" },
   theboy181: { repo: "theboy181/switch-ptchtxt-mods", branch: "main", label: "TheBoy181" },
   wiki: { repo: "amakvana/Switch-Mods-Wiki-Archive", branch: "main", label: "Wiki" },
   ptbr: { repo: "staticpiratex/Traducoes-SWITCH-PTBR", branch: "NintendoSwitch", label: "PT-BR" },
+  gamebanana: { repo: "", branch: "", label: "GameBanana" },
 };
 export const SOURCE_LABEL: Record<Source, string> = {
   official: SOURCES.official.label,
   theboy181: SOURCES.theboy181.label,
   wiki: SOURCES.wiki.label,
   ptbr: SOURCES.ptbr.label,
+  gamebanana: SOURCES.gamebanana.label,
 };
 
+export type GbMod = ModEntry & { thumb: string | null; likes: number; featured: boolean };
+export type GbList = { found: boolean; mods: GbMod[] };
 export type ModFile = { src: string; dest: string };
 export type ModEntry = {
   id: string;
@@ -66,7 +70,9 @@ export const norm = (s: string) =>
 export const modPath = (m: ModEntry) => (m.source === "official" ? m.id : m.id.slice(m.source.length + 1));
 
 export const githubUrl = (m: ModEntry) =>
-  m.source === "ptbr"
+  m.source === "gamebanana"
+    ? `https://gamebanana.com/mods/${modPath(m)}`
+    : m.source === "ptbr"
     ? `https://github.com/${SOURCES.ptbr.repo}/releases/tag/${SOURCES.ptbr.branch}`
     : `https://github.com/${SOURCES[m.source].repo}/tree/${SOURCES[m.source].branch}/${modPath(m)
         .split("/")
@@ -78,6 +84,8 @@ export const api = {
   setEmulator: (kind: Emu) => invoke<void>("set_emulator", { kind }),
   setEmuDir: (kind: Emu, path: string) => invoke<void>("set_emu_dir", { kind, path }),
   getCatalog: (force: boolean) => invoke<Catalog>("get_catalog", { force }),
+  gamebananaMods: (tid: string, name: string, all: boolean) =>
+    invoke<GbList>("gamebanana_mods", { tid, name, all }),
   listGames: () => invoke<Game[]>("list_games"),
   gameCover: (tid: string) => invoke<string | null>("game_cover", { tid }),
   listInstalled: (tid: string) => invoke<InstalledView[]>("list_installed", { tid }),

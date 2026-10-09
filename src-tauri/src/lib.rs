@@ -1,5 +1,6 @@
 mod addons;
 mod catalog;
+mod gamebanana;
 mod emu;
 mod install;
 mod nsz;
@@ -162,6 +163,24 @@ async fn get_catalog(app: AppHandle, state: State<'_, CatalogState>, force: bool
     Ok(cat)
 }
 
+/// Mods do GameBanana para um jogo; entram no catálogo em memória (substituindo os anteriores do jogo)
+/// para que `prepare_install` os encontre.
+#[tauri::command]
+async fn gamebanana_mods(state: State<'_, CatalogState>, tid: String, name: String, all: bool) -> Result<gamebanana::GbList, String> {
+    emu::check_tid(&tid)?;
+    // só o pedido mais recente grava no catálogo: um modo antigo e lento não sobrescreve o novo
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+    let list = gamebanana::list(&tid, &name, all).await?;
+    if SEQ.load(std::sync::atomic::Ordering::SeqCst) == n {
+        if let Some(c) = state.0.lock().as_mut() {
+            c.mods.retain(|m| m.source != catalog::Source::Gamebanana || m.tid.as_deref() != Some(&tid));
+            c.mods.extend(list.mods.iter().map(|m| m.entry.clone()));
+        }
+    }
+    Ok(list)
+}
+
 #[tauri::command]
 fn list_games(app: AppHandle, state: State<'_, CatalogState>) -> Result<Vec<emu::Game>, String> {
     let emu = resolve_emu(&app)?;
@@ -232,6 +251,7 @@ pub fn run() {
             set_emulator,
             set_emu_dir,
             get_catalog,
+            gamebanana_mods,
             list_games,
             game_cover,
             open_mod_folder,

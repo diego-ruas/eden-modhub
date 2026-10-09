@@ -20,6 +20,8 @@ pub enum Source {
     Theboy181,
     Wiki,
     Ptbr,
+    /// GameBanana: buscado por jogo sob demanda (ver `gamebanana.rs`), nunca entra em `ALL` nem no cache
+    Gamebanana,
 }
 
 impl Source {
@@ -32,6 +34,7 @@ impl Source {
             Source::Theboy181 => "theboy181/switch-ptchtxt-mods",
             Source::Wiki => "amakvana/Switch-Mods-Wiki-Archive",
             Source::Ptbr => "staticpiratex/Traducoes-SWITCH-PTBR",
+            Source::Gamebanana => "",
         }
     }
 
@@ -49,6 +52,7 @@ impl Source {
             Source::Theboy181 => "theboy181:",
             Source::Wiki => "wiki:",
             Source::Ptbr => "ptbr:",
+            Source::Gamebanana => "gamebanana:",
         }
     }
 

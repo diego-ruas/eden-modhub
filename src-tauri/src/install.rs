@@ -73,7 +73,7 @@ struct Progress {
 
 // ---------- helpers ----------
 
-fn encode_segment(s: &str) -> String {
+pub(crate) fn encode_segment(s: &str) -> String {
     let mut out = String::new();
     for b in s.bytes() {
         if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
@@ -241,15 +241,20 @@ async fn do_prepare(app: &AppHandle, m: &catalog::ModEntry, tmp: &Path) -> Resul
         }
         ModKind::Archive => {
             let src = &m.files[0].src;
-            let ext = src.rsplit('.').next().unwrap_or("").to_lowercase();
+            let (url, ext, name) = if m.source == catalog::Source::Gamebanana {
+                let (u, e) = crate::gamebanana::download_url(src).await?;
+                (u, e, m.name.clone())
+            } else {
+                (url(src), src.rsplit('.').next().unwrap_or("").to_lowercase(), stem(src))
+            };
             let arc = tmp.join(format!("_archive.{ext}"));
-            download(&url(src), &arc, app).await?;
+            download(&url, &arc, app).await?;
             let x = tmp.join("x");
             let xx = x.clone();
             tauri::async_runtime::spawn_blocking(move || extract(&arc, &xx))
                 .await
                 .map_err(|e| e.to_string())??;
-            Ok(roots_from_extracted(&x, &stem(src)))
+            Ok(roots_from_extracted(&x, &name))
         }
         ModKind::Pack => {
             let (url, tid, size) = (m.source.raw_url(crate::pack::ZIP), m.files[0].src.clone(), m.size);
@@ -317,7 +322,7 @@ fn stage(
         Ok(r) if !r.is_empty() => r,
         Ok(_) => {
             let _ = std::fs::remove_dir_all(&tmp);
-            return Err("Layout do mod não reconhecido. Use 'Ver no GitHub'.".into());
+            return Err("Layout do mod não reconhecido. Abra a página do mod.".into());
         }
         Err(e) => {
             let _ = std::fs::remove_dir_all(&tmp);
@@ -585,6 +590,39 @@ mod tests {
         assert!(roots
             .iter()
             .any(|r| r.files.iter().any(|(_, d)| d.starts_with("exefs/") || d.starts_with("romfs/"))));
+    }
+
+    /// GameBanana de ponta a ponta: link (redirect de /dl) → download → extract → detecção de layout.
+    /// Tenta os primeiros curados do TotK (até 100 MB cada) até um render roots.
+    #[test]
+    #[ignore]
+    fn gamebanana_install_network() {
+        let dir = std::env::temp_dir().join("eden-mod-manager-gb-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let found = tauri::async_runtime::block_on(async {
+            let mods = crate::gamebanana::list("0100F2C0115B6000", "The Legend of Zelda: Tears of the Kingdom", false)
+                .await
+                .unwrap();
+            for m in mods.mods.iter().take(8) {
+                let Ok((url, ext)) = crate::gamebanana::download_url(&m.entry.files[0].src).await else { continue };
+                let resp = catalog::HTTP.get(&url).header("User-Agent", UA).send().await.unwrap();
+                assert!(resp.status().is_success(), "{url}: {}", resp.status());
+                if resp.content_length().is_some_and(|n| n > 100 << 20) {
+                    continue;
+                }
+                let file = dir.join(format!("m.{ext}"));
+                std::fs::write(&file, resp.bytes().await.unwrap()).unwrap();
+                let out = dir.join("x");
+                let _ = std::fs::remove_dir_all(&out);
+                if extract(&file, &out).is_ok() && !roots_from_extracted(&out, &m.entry.name).is_empty() {
+                    return true;
+                }
+            }
+            false
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(found, "nenhum dos primeiros curados virou roots");
     }
 
     /// Extrai a tradução de um jogo pequeno do pacote PT-BR, de ponta a ponta até `roots_from_extracted`.
