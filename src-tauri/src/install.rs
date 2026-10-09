@@ -8,7 +8,7 @@ use std::path::{Component, Path, PathBuf};
 use tauri::{AppHandle, Emitter, State};
 use walkdir::WalkDir;
 
-const TMP_PREFIX: &str = ".modhub-tmp-";
+const TMP_PREFIX: &str = ".eden-mod-manager-tmp-";
 
 pub struct Root {
     key: String,
@@ -186,7 +186,8 @@ fn roots_from_extracted(dir: &Path, fallback: &str) -> Vec<Root> {
     let mut groups: BTreeMap<String, Vec<(PathBuf, String)>> = BTreeMap::new();
     for e in WalkDir::new(dir).into_iter().flatten().filter(|e| e.file_type().is_file()) {
         let rel = e.path().strip_prefix(dir).unwrap().to_string_lossy().replace('\\', "/");
-        if let Some((root, dest)) = catalog::mod_root(&rel) {
+        // dest vem do zip/7z/rar de terceiros: `..` ou caminho absoluto sairiam da pasta do mod no commit
+        if let Some((root, dest)) = catalog::mod_root(&rel).filter(|(_, d)| !unsafe_path(Path::new(d))) {
             groups.entry(root).or_default().push((e.path().to_path_buf(), dest));
         }
     }
@@ -220,6 +221,19 @@ async fn do_prepare(app: &AppHandle, m: &catalog::ModEntry, tmp: &Path) -> Resul
                 .map_err(|e| e.to_string())??;
             Ok(roots_from_extracted(&x, &stem(src)))
         }
+        ModKind::Pack => {
+            let (url, tid, size) = (m.source.raw_url(crate::pack::ZIP), m.files[0].src.clone(), m.size);
+            let x = tmp.join("x");
+            let (xx, app2) = (x.clone(), app.clone());
+            tauri::async_runtime::spawn_blocking(move || {
+                crate::pack::extract(&url, &tid, size, &xx, |received, total| {
+                    let _ = app2.emit("download-progress", Progress { received, total: Some(total) });
+                })
+            })
+                .await
+                .map_err(|e| e.to_string())??;
+            Ok(roots_from_extracted(&x, &m.name))
+        }
     }
 }
 
@@ -233,12 +247,16 @@ pub async fn prepare_install(
     tid: String,
     mod_id: String,
 ) -> Result<Prepared, String> {
+    crate::emu::check_tid(&tid)?;
     let m = cat
         .0
         .lock()
         .as_ref()
         .and_then(|c| c.mods.iter().find(|m| m.id == mod_id).cloned())
         .ok_or("Mod não encontrado no catálogo")?;
+    if m.tid.as_deref().is_some_and(|t| !t.eq_ignore_ascii_case(&tid)) {
+        return Err("Este mod é de outro jogo".into());
+    }
     let load = crate::resolve_emu(&app)?.mods_dir();
     let token = format!(
         "{:x}",
@@ -333,6 +351,7 @@ pub fn cancel_install(pending: State<'_, Pending>, token: String) {
 
 #[tauri::command]
 pub fn list_installed(app: AppHandle, tid: String) -> Result<Vec<Installed>, String> {
+    crate::emu::check_tid(&tid)?;
     let emu = crate::resolve_emu(&app)?;
     let all = load_manifest(&app)?;
     let kept: Vec<Installed> = all
@@ -348,6 +367,7 @@ pub fn list_installed(app: AppHandle, tid: String) -> Result<Vec<Installed>, Str
 
 #[tauri::command]
 pub fn uninstall(app: AppHandle, tid: String, folder: String) -> Result<(), String> {
+    crate::emu::check_tid(&tid)?;
     let mut m = load_manifest(&app)?;
     let emu = crate::resolve_emu(&app)?;
     let pos = m
@@ -386,7 +406,7 @@ mod tests {
             catalog::Source::Official.repo(),
             catalog::Source::Official.branch()
         );
-        let dir = std::env::temp_dir().join("modhub-rar-test");
+        let dir = std::env::temp_dir().join("eden-mod-manager-rar-test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let bytes = tauri::async_runtime::block_on(async {
@@ -408,6 +428,30 @@ mod tests {
         assert!(roots
             .iter()
             .any(|r| r.files.iter().any(|(_, d)| d.starts_with("exefs/") || d.starts_with("romfs/"))));
+    }
+
+    /// Extrai a tradução de um jogo pequeno do pacote PT-BR, de ponta a ponta até `roots_from_extracted`.
+    #[test]
+    #[ignore]
+    fn pack_network() {
+        let dir = std::env::temp_dir().join("eden-mod-manager-pack-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        let mods = tauri::async_runtime::block_on(crate::pack::list()).unwrap();
+        let m = mods.iter().find(|m| m.tid.as_deref() == Some("01006000040C2000")).unwrap();
+        let url = m.source.raw_url(crate::pack::ZIP);
+        let mut last = 0;
+        crate::pack::extract(&url, &m.files[0].src, m.size, &dir, |r, t| {
+            assert_eq!(t, m.size);
+            last = r;
+        })
+        .unwrap();
+        assert_eq!(last, m.size);
+        let roots = roots_from_extracted(&dir, &m.name);
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0].name, m.name);
+        assert!(!roots[0].files.is_empty());
+        assert!(roots[0].files.iter().all(|(p, d)| d.starts_with("romfs/") && p.is_file()));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
@@ -431,7 +475,7 @@ pub async fn peek_archive(
         .as_ref()
         .and_then(|c| c.mods.iter().find(|m| m.id == mod_id).cloned())
         .ok_or("Mod não encontrado no catálogo")?;
-    let tmp = std::env::temp_dir().join(format!("modhub-peek-{:x}", catalog::now_secs() ^ (mod_id.len() as u64)));
+    let tmp = std::env::temp_dir().join(format!("eden-mod-manager-peek-{:x}", catalog::now_secs() ^ (mod_id.len() as u64)));
     let _ = std::fs::remove_dir_all(&tmp);
     let r = do_prepare(&app, &m, &tmp).await;
     let _ = std::fs::remove_dir_all(&tmp);

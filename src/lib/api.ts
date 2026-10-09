@@ -1,16 +1,18 @@
 import { invoke } from "@tauri-apps/api/core";
 
-export type Source = "official" | "theboy181" | "wiki";
+export type Source = "official" | "theboy181" | "wiki" | "ptbr";
 // Espelha catalog.rs: repositório, branch e prefixo do id de cada fonte.
 const SOURCES: Record<Source, { repo: string; branch: string; label: string }> = {
   official: { repo: "ADEMOLA200/Switch-Emulator-Mod-Database", branch: "develop", label: "" },
   theboy181: { repo: "theboy181/switch-ptchtxt-mods", branch: "main", label: "TheBoy181" },
   wiki: { repo: "amakvana/Switch-Mods-Wiki-Archive", branch: "main", label: "Wiki" },
+  ptbr: { repo: "staticpiratex/Traducoes-SWITCH-PTBR", branch: "NintendoSwitch", label: "PT-BR" },
 };
 export const SOURCE_LABEL: Record<Source, string> = {
   official: SOURCES.official.label,
   theboy181: SOURCES.theboy181.label,
   wiki: SOURCES.wiki.label,
+  ptbr: SOURCES.ptbr.label,
 };
 
 export type ModFile = { src: string; dest: string };
@@ -19,7 +21,7 @@ export type ModEntry = {
   tid: string | null;
   name: string;
   version: string | null;
-  kind: "archive" | "files";
+  kind: "archive" | "files" | "pack";
   files: ModFile[];
   size: number;
   group: string;
@@ -62,10 +64,12 @@ export const norm = (s: string) =>
 export const modPath = (m: ModEntry) => (m.source === "official" ? m.id : m.id.slice(m.source.length + 1));
 
 export const githubUrl = (m: ModEntry) =>
-  `https://github.com/${SOURCES[m.source].repo}/tree/${SOURCES[m.source].branch}/${modPath(m)
-    .split("/")
-    .map(encodeURIComponent)
-    .join("/")}`;
+  m.source === "ptbr"
+    ? `https://github.com/${SOURCES.ptbr.repo}/releases/tag/${SOURCES.ptbr.branch}`
+    : `https://github.com/${SOURCES[m.source].repo}/tree/${SOURCES[m.source].branch}/${modPath(m)
+        .split("/")
+        .map(encodeURIComponent)
+        .join("/")}`;
 
 export const api = {
   getEmu: () => invoke<{ kind: Emu; dir: string | null }>("get_emu"),

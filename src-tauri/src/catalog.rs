@@ -6,8 +6,9 @@ use std::sync::LazyLock;
 
 pub const UA: &str = "Eden-Mod-Manager";
 
-/// Repositórios de mods, em ordem de prioridade (o primeiro vence duplicatas).
+/// Fontes de mods, em ordem de prioridade (o primeiro vence duplicatas).
 /// Wiki = espelho do wiki oficial do yuzu (sucessor do LexouilleTM/yuzu-mods-archive, removido).
+/// Ptbr = traduções PT-BR num .zip de release (não é árvore de repositório; ver `pack.rs`).
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Source {
@@ -15,9 +16,11 @@ pub enum Source {
     Official,
     Theboy181,
     Wiki,
+    Ptbr,
 }
 
 impl Source {
+    /// Fontes que são árvores de repositório (as únicas que passam por `fetch_tree`/`build_catalog`).
     pub const ALL: [Source; 3] = [Source::Official, Source::Theboy181, Source::Wiki];
 
     pub fn repo(self) -> &'static str {
@@ -25,12 +28,14 @@ impl Source {
             Source::Official => "ADEMOLA200/Switch-Emulator-Mod-Database",
             Source::Theboy181 => "theboy181/switch-ptchtxt-mods",
             Source::Wiki => "amakvana/Switch-Mods-Wiki-Archive",
+            Source::Ptbr => "staticpiratex/Traducoes-SWITCH-PTBR",
         }
     }
 
     pub fn branch(self) -> &'static str {
         match self {
             Source::Official => "develop",
+            Source::Ptbr => "NintendoSwitch",
             _ => "main",
         }
     }
@@ -40,10 +45,15 @@ impl Source {
             Source::Official => "",
             Source::Theboy181 => "theboy181:",
             Source::Wiki => "wiki:",
+            Source::Ptbr => "ptbr:",
         }
     }
 
+    /// URL de um arquivo na fonte: raw do branch, ou asset da release (Ptbr).
     pub fn raw_url(self, path: &str) -> String {
+        if self == Source::Ptbr {
+            return format!("https://github.com/{}/releases/download/{}/{}", self.repo(), self.branch(), crate::install::encode_path(path));
+        }
         format!("https://raw.githubusercontent.com/{}/{}/{}", self.repo(), self.branch(), crate::install::encode_path(path))
     }
 }
@@ -60,6 +70,8 @@ pub struct ModFile {
 pub enum ModKind {
     Archive,
     Files,
+    /// entradas de um .zip remoto lido por Range (`files[0].src` = TID); ver `pack.rs`
+    Pack,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -90,7 +102,7 @@ pub struct Catalog {
     pub schema: u32,
 }
 
-pub const SCHEMA: u32 = 2;
+pub const SCHEMA: u32 = 3;
 
 #[derive(Deserialize)]
 pub struct TreeItem {
@@ -387,14 +399,23 @@ fn merge(parts: Vec<Catalog>) -> Catalog {
 }
 
 pub async fn fetch_catalog(cache: &Path) -> Result<Catalog, String> {
+    // todas as fontes em paralelo (eram sequenciais); `parts` mantém a ordem de prioridade
+    let trees: Vec<_> = Source::ALL
+        .into_iter()
+        .map(|s| tauri::async_runtime::spawn(async move { (s, fetch_tree(s).await) }))
+        .collect();
+    let pack = tauri::async_runtime::spawn(crate::pack::list());
     let mut parts = Vec::new();
-    for s in Source::ALL {
-        match fetch_tree(s).await {
-            Ok((sha, tree)) => parts.push(build_catalog(&tree, sha, s)),
+    for h in trees {
+        match h.await.map_err(|e| e.to_string())? {
+            (s, Ok((sha, tree))) => parts.push(build_catalog(&tree, sha, s)),
             // fontes secundárias fora do ar não derrubam o catálogo; voltam no próximo "Atualizar"
-            Err(e) if s == Source::Official => return Err(e),
-            Err(_) => {}
+            (Source::Official, Err(e)) => return Err(e),
+            (_, Err(_)) => {}
         }
+    }
+    if let Ok(Ok(mods)) = pack.await {
+        parts.push(Catalog { tree_sha: String::new(), fetched_at: now_secs(), mods, names: HashMap::new(), schema: SCHEMA });
     }
     let cat = merge(parts);
     if let Some(dir) = cache.parent() {

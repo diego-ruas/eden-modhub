@@ -134,14 +134,14 @@ pub fn cleanup_old_exe() {
 mod tests {
     use super::verify;
 
-    const PK: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEVCNkVBRDY2RTZFOUNCMDgKUldRSXkrbm1acTF1Njl3MEV6SEhqVzM2WnhkRWVlclNBTXpYVWwvT3VEZ1pxZm01RDVnS29sekEK";
-    const SIG: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRSXkrbm1acTF1NnpiT0hVWEkyaHkvbTVRU1pUTEdYdlE4cFJCNUcvRnBOYzR2YXJpMG1GNnd1QW14TnlIS3R6VEUzbnZGK1pQeUVpNHM2UEkyOWJCd2FLSDdOemU0aWc4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxNDgwMDUxCWZpbGU6ZGF0YS5iaW4KcDRsUW1iS1VLQ3BEUFBuU1BhSzVrWkk3OXREZHRpdDA1QjFSNnhmei9LMHFubnJBMnZQeXpMSXgzTEFuYyt1STFsbnlEa0U2cFRWYmUrUjhDa0syQnc9PQo=";
+    const PK: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQ4M0I3MTU0N0FFMDcxRkQKUldUOWNlQjZWSEU3Mk03ZHNaeU8xMFRnRTBYN2ttRzlzT1VpQTZHL3VVd29RMy9LRmpCNkVSQnMK";
+    const SIG: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUOWNlQjZWSEU3MkRDT0RvSWNuZzRKNmtXZndxcGJlbUZnV2RwQlRPYkxicmRmYnp3SnpXSEp0S1ZET2xkMitQVXlUWEViZHF5STMwUnErNzZhZG9rVmZadWFTLy9LR0FVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxNTAzNjA1CWZpbGU6ZGF0YS5iaW4KU2tVNWRDdVRGVXpDYmFSSGVCUG9XaXh4NjhyOW5OMklYc0lGVDdkWkxzb2dJZ1QvK1BSYnh4NEZpVVY1ek5scWVVMG9DZUVYbTFWcU01elZ5VE1LQnc9PQo=";
     const PROD_PK: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEY4Qjk4QjJEQTRDRTM2MjUKUldRbE5zNmtMWXU1K0FXeHpTTHpJSHhyRUxaUTBXdm5oaUxoa2huUlU3b0lMZmN4ZDdiSCtJT1UK";
 
     #[test]
     fn verify_accepts_signed_and_rejects_tampered() {
-        assert!(verify(b"eden-modhub", SIG, PK).is_ok());
-        assert!(verify(b"eden-modhuB", SIG, PK).is_err());
-        assert!(verify(b"eden-modhub", SIG, PROD_PK).is_err());
+        assert!(verify(b"eden-mod-manager", SIG, PK).is_ok());
+        assert!(verify(b"eden-mod-manageR", SIG, PK).is_err());
+        assert!(verify(b"eden-mod-manager", SIG, PROD_PK).is_err());
     }
 }
