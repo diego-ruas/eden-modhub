@@ -3,7 +3,7 @@ use crate::emu::Kind;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
-use std::io::Write;
+use std::io::{Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
 use tauri::{AppHandle, Emitter, State};
 use walkdir::WalkDir;
@@ -57,6 +57,14 @@ pub struct Installed {
     installed_at: u64,
 }
 
+/// `Installed` + estado na config do emulador (não persistido no manifesto).
+#[derive(Serialize)]
+pub struct InstalledView {
+    #[serde(flatten)]
+    item: Installed,
+    enabled: bool,
+}
+
 #[derive(Serialize, Clone)]
 struct Progress {
     received: u64,
@@ -65,7 +73,7 @@ struct Progress {
 
 // ---------- helpers ----------
 
-fn encode_segment(s: &str) -> String {
+pub(crate) fn encode_segment(s: &str) -> String {
     let mut out = String::new();
     for b in s.bytes() {
         if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
@@ -117,28 +125,50 @@ pub fn cleanup_tmp(load: &Path) {
     }
 }
 
+/// GET com `Range` a partir de `from` (0 = download inteiro).
+async fn get(url: &str, from: u64) -> Result<reqwest::Response, String> {
+    let mut req = catalog::HTTP.get(url).header("User-Agent", UA);
+    if from > 0 {
+        req = req.header("Range", format!("bytes={from}-"));
+    }
+    let resp = req.send().await.map_err(|e| format!("Falha ao baixar {url}: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("Falha ao baixar {url}: HTTP {}", resp.status()));
+    }
+    Ok(resp)
+}
+
+/// Se a conexão cair no meio, retoma de onde parou (até 3 vezes); servidor que ignora `Range` reinicia do zero.
 pub(crate) async fn download(url: &str, dest: &Path, app: &AppHandle) -> Result<(), String> {
     if let Some(d) = dest.parent() {
         std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
     }
-    let mut resp = reqwest::Client::new()
-        .get(url)
-        .header("User-Agent", UA)
-        .send()
-        .await
-        .map_err(|e| format!("Falha ao baixar {url}: {e}"))?;
-    if !resp.status().is_success() {
-        return Err(format!("Falha ao baixar {url}: HTTP {}", resp.status()));
-    }
+    let mut resp = get(url, 0).await?;
     let total = resp.content_length();
     let mut f = std::fs::File::create(dest).map_err(|e| e.to_string())?;
-    let (mut received, mut last) = (0u64, 0u64);
-    while let Some(chunk) = resp.chunk().await.map_err(|e| format!("Falha ao baixar {url}: {e}"))? {
-        f.write_all(&chunk).map_err(|e| e.to_string())?;
-        received += chunk.len() as u64;
-        if received - last >= 256 * 1024 {
-            last = received;
-            let _ = app.emit("download-progress", Progress { received, total });
+    let (mut received, mut last, mut retries) = (0u64, 0u64, 0);
+    loop {
+        match resp.chunk().await {
+            Ok(Some(chunk)) => {
+                f.write_all(&chunk).map_err(|e| e.to_string())?;
+                received += chunk.len() as u64;
+                if received - last >= 256 * 1024 {
+                    last = received;
+                    let _ = app.emit("download-progress", Progress { received, total });
+                }
+            }
+            Ok(None) => break,
+            Err(e) => {
+                retries += 1;
+                if retries > 3 {
+                    return Err(format!("Falha ao baixar {url}: {e}"));
+                }
+                resp = get(url, received).await?;
+                if received > 0 && resp.status() != reqwest::StatusCode::PARTIAL_CONTENT {
+                    f.set_len(0).and_then(|_| f.seek(SeekFrom::Start(0))).map_err(|e| e.to_string())?;
+                    (received, last) = (0, 0);
+                }
+            }
         }
     }
     let _ = app.emit("download-progress", Progress { received, total });
@@ -211,15 +241,20 @@ async fn do_prepare(app: &AppHandle, m: &catalog::ModEntry, tmp: &Path) -> Resul
         }
         ModKind::Archive => {
             let src = &m.files[0].src;
-            let ext = src.rsplit('.').next().unwrap_or("").to_lowercase();
+            let (url, ext, name) = if m.source == catalog::Source::Gamebanana {
+                let (u, e) = crate::gamebanana::download_url(src).await?;
+                (u, e, m.name.clone())
+            } else {
+                (url(src), src.rsplit('.').next().unwrap_or("").to_lowercase(), stem(src))
+            };
             let arc = tmp.join(format!("_archive.{ext}"));
-            download(&url(src), &arc, app).await?;
+            download(&url, &arc, app).await?;
             let x = tmp.join("x");
             let xx = x.clone();
             tauri::async_runtime::spawn_blocking(move || extract(&arc, &xx))
                 .await
                 .map_err(|e| e.to_string())??;
-            Ok(roots_from_extracted(&x, &stem(src)))
+            Ok(roots_from_extracted(&x, &name))
         }
         ModKind::Pack => {
             let (url, tid, size) = (m.source.raw_url(crate::pack::ZIP), m.files[0].src.clone(), m.size);
@@ -257,18 +292,37 @@ pub async fn prepare_install(
     if m.tid.as_deref().is_some_and(|t| !t.eq_ignore_ascii_case(&tid)) {
         return Err("Este mod é de outro jogo".into());
     }
-    let load = crate::resolve_emu(&app)?.mods_dir();
+    let (tmp, token) = new_tmp(&app)?;
+    let r = do_prepare(&app, &m, &tmp).await;
+    stage(&pending, tid, mod_id, m.version.clone(), tmp, token, r)
+}
+
+fn new_tmp(app: &AppHandle) -> Result<(PathBuf, String), String> {
+    let load = crate::resolve_emu(app)?.mods_dir();
     let token = format!(
         "{:x}",
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)
     );
     let tmp = load.join(format!("{TMP_PREFIX}{token}"));
     std::fs::create_dir_all(&tmp).map_err(|e| format!("Falha ao criar pasta temporária: {e}"))?;
-    let roots = match do_prepare(&app, &m, &tmp).await {
+    Ok((tmp, token))
+}
+
+/// Registra a instalação pendente, ou apaga a pasta temporária se a preparação falhou.
+fn stage(
+    pending: &Pending,
+    tid: String,
+    mod_id: String,
+    version: Option<String>,
+    tmp: PathBuf,
+    token: String,
+    roots: Result<Vec<Root>, String>,
+) -> Result<Prepared, String> {
+    let roots = match roots {
         Ok(r) if !r.is_empty() => r,
         Ok(_) => {
             let _ = std::fs::remove_dir_all(&tmp);
-            return Err("Layout do mod não reconhecido. Use 'Ver no GitHub'.".into());
+            return Err("Layout do mod não reconhecido. Abra a página do mod.".into());
         }
         Err(e) => {
             let _ = std::fs::remove_dir_all(&tmp);
@@ -279,8 +333,25 @@ pub async fn prepare_install(
         .iter()
         .map(|r| RootInfo { key: r.key.clone(), name: r.name.clone(), file_count: r.files.len() })
         .collect();
-    pending.0.lock().insert(token.clone(), PendingInstall { tid, mod_id, version: m.version.clone(), tmp, roots });
+    pending.0.lock().insert(token.clone(), PendingInstall { tid, mod_id, version, tmp, roots });
     Ok(Prepared { token, roots: infos })
+}
+
+/// Mod baixado pelo usuário (zip/7z/rar): extrai e segue o mesmo fluxo de escolha de variantes e `commit`.
+#[tauri::command]
+pub async fn prepare_local(app: AppHandle, pending: State<'_, Pending>, tid: String, path: String) -> Result<Prepared, String> {
+    crate::emu::check_tid(&tid)?;
+    let src = PathBuf::from(&path);
+    let file = src.file_name().ok_or("Arquivo inválido")?.to_string_lossy().into_owned();
+    let (tmp, token) = new_tmp(&app)?;
+    let (arc, out) = (src, tmp.join("x"));
+    let name = stem(&file);
+    let r = tauri::async_runtime::spawn_blocking(move || extract(&arc, &out).map(|_| roots_from_extracted(&out, &name)))
+        .await
+        .map_err(|e| e.to_string())
+        .and_then(|r| r)
+        .and_then(|r| if r.is_empty() { Err("Nenhuma pasta romfs/exefs encontrada no arquivo".into()) } else { Ok(r) });
+    stage(&pending, tid, format!("local:{file}"), None, tmp, token, r)
 }
 
 fn commit(app: &AppHandle, p: PendingInstall, keys: &[String]) -> Result<Vec<Installed>, String> {
@@ -290,19 +361,14 @@ fn commit(app: &AppHandle, p: PendingInstall, keys: &[String]) -> Result<Vec<Ins
     let mut done = Vec::new();
     for root in p.roots.iter().filter(|r| keys.contains(&r.key)) {
         let base = sanitize(&root.name);
-        let reinstall = manifest.iter().position(|i| {
-            i.emu == emu.kind && i.tid == p.tid && i.folder == base && i.mod_id == p.mod_id && i.root_key == root.key
-        });
+        let reinstall = manifest
+            .iter()
+            .position(|i| i.emu == emu.kind && i.tid == p.tid && i.mod_id == p.mod_id && i.root_key == root.key);
         if let Some(pos) = reinstall {
-            let _ = std::fs::remove_dir_all(game_dir.join(&base));
+            let _ = std::fs::remove_dir_all(game_dir.join(&manifest[pos].folder));
             manifest.remove(pos);
         }
-        let mut folder = base.clone();
-        let mut n = 2;
-        while game_dir.join(&folder).exists() {
-            folder = format!("{base} ({n})");
-            n += 1;
-        }
+        let folder = unique_folder(&game_dir, &base);
         let target = game_dir.join(&folder);
         std::fs::create_dir_all(&target).map_err(|e| e.to_string())?;
         for (src, dest) in &root.files {
@@ -328,6 +394,17 @@ fn commit(app: &AppHandle, p: PendingInstall, keys: &[String]) -> Result<Vec<Ins
     Ok(done)
 }
 
+/// `base`, ou `base (2)`, `base (3)`… o primeiro que ainda não existe em `dir`.
+fn unique_folder(dir: &Path, base: &str) -> String {
+    let mut folder = base.to_string();
+    let mut n = 2;
+    while dir.join(&folder).exists() {
+        folder = format!("{base} ({n})");
+        n += 1;
+    }
+    folder
+}
+
 #[tauri::command]
 pub fn commit_install(
     app: AppHandle,
@@ -350,7 +427,7 @@ pub fn cancel_install(pending: State<'_, Pending>, token: String) {
 }
 
 #[tauri::command]
-pub fn list_installed(app: AppHandle, tid: String) -> Result<Vec<Installed>, String> {
+pub fn list_installed(app: AppHandle, tid: String) -> Result<Vec<InstalledView>, String> {
     crate::emu::check_tid(&tid)?;
     let emu = crate::resolve_emu(&app)?;
     let all = load_manifest(&app)?;
@@ -362,7 +439,33 @@ pub fn list_installed(app: AppHandle, tid: String) -> Result<Vec<Installed>, Str
     if kept.len() != all.len() {
         save_manifest(&app, &kept)?;
     }
-    Ok(kept.into_iter().filter(|i| i.emu == emu.kind && i.tid == tid).collect())
+    let off = crate::addons::disabled(&emu, &tid);
+    Ok(kept
+        .into_iter()
+        .filter(|i| i.emu == emu.kind && i.tid == tid)
+        .map(|item| InstalledView { enabled: !off.contains(&item.folder), item })
+        .collect())
+}
+
+#[tauri::command]
+pub fn set_mod_enabled(app: AppHandle, tid: String, folder: String, enabled: bool) -> Result<(), String> {
+    crate::emu::check_tid(&tid)?;
+    let emu = crate::resolve_emu(&app)?;
+    if !load_manifest(&app)?.iter().any(|i| i.emu == emu.kind && i.tid == tid && i.folder == folder) {
+        return Err("Pasta não foi instalada pelo Eden Mod Manager".into());
+    }
+    crate::addons::set_enabled(&emu, &tid, &folder, enabled)
+}
+
+#[tauri::command]
+pub async fn list_conflicts(app: AppHandle, tid: String) -> Result<Vec<crate::addons::Conflict>, String> {
+    crate::emu::check_tid(&tid)?;
+    let emu = crate::resolve_emu(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::addons::conflicts(&emu.tid_dir(&tid), &crate::addons::disabled(&emu, &tid))
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -379,6 +482,9 @@ pub fn uninstall(app: AppHandle, tid: String, folder: String) -> Result<(), Stri
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(format!("Falha ao remover: {e}")),
     }
+    if crate::addons::disabled(&emu, &tid).contains(&folder) {
+        let _ = crate::addons::set_enabled(&emu, &tid, &folder, true);
+    }
     m.remove(pos);
     save_manifest(&app, &m)
 }
@@ -386,6 +492,62 @@ pub fn uninstall(app: AppHandle, tid: String, folder: String) -> Result<(), Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unsafe_path_rejects_traversal_and_absolute() {
+        for p in ["../x", "a/../../x", "/x"] {
+            assert!(unsafe_path(Path::new(p)), "{p}");
+        }
+        assert!(!unsafe_path(Path::new("romfs/a/b.bin")));
+    }
+
+    #[test]
+    fn extract_7z_never_writes_outside_target() {
+        let base = std::env::temp_dir().join(format!("emm-slip7-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let zp = base.join("evil.7z");
+        let mut w = sevenz_rust2::ArchiveWriter::create(&zp).unwrap();
+        for name in ["../escaped.txt", "ok/romfs/a.bin"] {
+            w.push_archive_entry(sevenz_rust2::ArchiveEntry::new_file(name), Some(&b"x"[..])).unwrap();
+        }
+        w.finish().unwrap();
+        let _ = extract(&zp, &base.join("out"));
+        assert!(!base.join("escaped.txt").exists());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn extract_zip_never_writes_outside_target() {
+        use std::io::Write as _;
+        let base = std::env::temp_dir().join(format!("emm-slip-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let zp = base.join("evil.zip");
+        let mut w = zip::ZipWriter::new(std::fs::File::create(&zp).unwrap());
+        let o = zip::write::SimpleFileOptions::default();
+        w.start_file("../escaped.txt", o).unwrap();
+        w.write_all(b"x").unwrap();
+        w.start_file("ok/romfs/a.bin", o).unwrap();
+        w.write_all(b"y").unwrap();
+        w.finish().unwrap();
+        let out = base.join("out");
+        let _ = extract(&zp, &out);
+        assert!(!base.join("escaped.txt").exists());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn unique_folder_skips_taken_names() {
+        let dir = std::env::temp_dir().join(format!("emm-unique-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(unique_folder(&dir, "m"), "m");
+        std::fs::create_dir_all(dir.join("m")).unwrap();
+        assert_eq!(unique_folder(&dir, "m"), "m (2)");
+        std::fs::create_dir_all(dir.join("m (2)")).unwrap();
+        assert_eq!(unique_folder(&dir, "m"), "m (3)");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn sanitize_cases() {
@@ -428,6 +590,39 @@ mod tests {
         assert!(roots
             .iter()
             .any(|r| r.files.iter().any(|(_, d)| d.starts_with("exefs/") || d.starts_with("romfs/"))));
+    }
+
+    /// GameBanana de ponta a ponta: link (redirect de /dl) → download → extract → detecção de layout.
+    /// Tenta os primeiros curados do TotK (até 100 MB cada) até um render roots.
+    #[test]
+    #[ignore]
+    fn gamebanana_install_network() {
+        let dir = std::env::temp_dir().join("eden-mod-manager-gb-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let found = tauri::async_runtime::block_on(async {
+            let mods = crate::gamebanana::list("0100F2C0115B6000", "The Legend of Zelda: Tears of the Kingdom", false)
+                .await
+                .unwrap();
+            for m in mods.mods.iter().take(8) {
+                let Ok((url, ext)) = crate::gamebanana::download_url(&m.entry.files[0].src).await else { continue };
+                let resp = catalog::HTTP.get(&url).header("User-Agent", UA).send().await.unwrap();
+                assert!(resp.status().is_success(), "{url}: {}", resp.status());
+                if resp.content_length().is_some_and(|n| n > 100 << 20) {
+                    continue;
+                }
+                let file = dir.join(format!("m.{ext}"));
+                std::fs::write(&file, resp.bytes().await.unwrap()).unwrap();
+                let out = dir.join("x");
+                let _ = std::fs::remove_dir_all(&out);
+                if extract(&file, &out).is_ok() && !roots_from_extracted(&out, &m.entry.name).is_empty() {
+                    return true;
+                }
+            }
+            false
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(found, "nenhum dos primeiros curados virou roots");
     }
 
     /// Extrai a tradução de um jogo pequeno do pacote PT-BR, de ponta a ponta até `roots_from_extracted`.
@@ -475,7 +670,8 @@ pub async fn peek_archive(
         .as_ref()
         .and_then(|c| c.mods.iter().find(|m| m.id == mod_id).cloned())
         .ok_or("Mod não encontrado no catálogo")?;
-    let tmp = std::env::temp_dir().join(format!("eden-mod-manager-peek-{:x}", catalog::now_secs() ^ (mod_id.len() as u64)));
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    let tmp = std::env::temp_dir().join(format!("eden-mod-manager-peek-{nanos:x}"));
     let _ = std::fs::remove_dir_all(&tmp);
     let r = do_prepare(&app, &m, &tmp).await;
     let _ = std::fs::remove_dir_all(&tmp);

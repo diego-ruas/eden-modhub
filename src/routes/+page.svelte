@@ -7,8 +7,9 @@
   import { openUrl } from "@tauri-apps/plugin-opener";
   import {
     api, githubUrl, modPath, SOURCE_LABEL, norm,
-    type Catalog, type Game, type Installed, type ModEntry, type NszOp, type Prepared, type RomFile,
+    type Catalog, type Conflict, type Game, type InstalledView, type ModEntry, type NszOp, type Prepared, type RomFile,
     type Emu, type RootInfo, type Source, type UpdateCheck, type EmuDir, type StorageInfo,
+    type GbMod,
   } from "$lib/api";
   import { EMU_HINT, EMU_NAME, i18n, locale, setLang, t, trErr, type Lang } from "$lib/i18n.svelte";
 
@@ -17,7 +18,8 @@
   let catalog = $state<Catalog | null>(null);
   let games = $state<Game[]>([]);
   let selected = $state<Game | null>(null);
-  let installed = $state<Installed[]>([]);
+  let installed = $state<InstalledView[]>([]);
+  let conflicts = $state<Conflict[]>([]);
   let gameFilter = $state("");
   let contents = $state<Record<string, RootInfo[]>>({});
   const PEEK_MAX = 30 * 1048576;
@@ -39,6 +41,9 @@
   let emuDirs = $state<EmuDir[]>([]);
   let storage = $state<StorageInfo | null>(null);
   let autoUpdate = $state(localStorage.getItem("autoUpdate") !== "off");
+  let gbAll = $state(localStorage.getItem("gbAll") === "on");
+  let gb = $state<{ tid: string; status: "loading" | "ok" | "notfound" | "error"; mods: GbMod[]; error: string } | null>(null);
+  let gbShown = $state(50);
   let micaOn = $state(localStorage.getItem("mica") !== "off");
   let micaOk = $state(false);
   let checked = $state<Record<string, boolean>>({});
@@ -245,6 +250,7 @@
     });
   });
   // Busca global (outros jogos): só com texto digitado; versão do jogo atual não se aplica.
+  const gbList = $derived(gb && selected && gb.tid === selected.tid ? gb.mods.filter((m) => !q || m.name.toLowerCase().includes(q)) : []);
   const searchHits = $derived.by(() => {
     if (!q || !catalog) return [];
     const listed = new Set([...available, ...possible].map((m) => m.id));
@@ -303,6 +309,7 @@
     busy = false;
     if (c) catalog = c;
     await loadGames();
+    if (selected) void loadGb(selected);
   }
 
   // Relê emulador/pasta salvos e recarrega tudo que depende deles.
@@ -313,6 +320,7 @@
     emuDir = i?.dir ?? null;
     selected = null;
     installed = [];
+    conflicts = [];
     roms = [];
     picked = [];
     nszLog = "";
@@ -371,11 +379,36 @@
     autoUpdate = on;
     localStorage.setItem("autoUpdate", on ? "on" : "off");
   }
+  function setGbAll(on: boolean) {
+    if (on === gbAll) return;
+    gbAll = on;
+    localStorage.setItem("gbAll", on ? "on" : "off");
+    if (selected) void loadGb(selected);
+  }
+
+  // GameBanana é buscado por jogo (curados por padrão) e vive fora de `catalog.mods`.
+  let gbSeq = 0;
+  async function loadGb(g: Game) {
+    if (!catalog) return;
+    const seq = ++gbSeq;
+    gbShown = 50;
+    if (!g.name) { gb = { tid: g.tid, status: "notfound", mods: [], error: "" }; return; }
+    gb = { tid: g.tid, status: "loading", mods: [], error: "" };
+    try {
+      const r = await api.gamebananaMods(g.tid, g.name, gbAll);
+      if (seq !== gbSeq) return;
+      gb = { tid: g.tid, status: r.found ? "ok" : "notfound", mods: r.mods, error: "" };
+    } catch (e) {
+      if (seq !== gbSeq) return;
+      gb = { tid: g.tid, status: "error", mods: [], error: trErr(String(e)) };
+    }
+  }
 
   async function select(g: Game) {
     selected = g;
     notice = "";
     await refreshInstalled();
+    void loadGb(g);
     peekAll(
       g,
       [...available, ...possible]
@@ -398,15 +431,39 @@
   }
 
   async function refreshInstalled() {
-    installed = selected ? ((await run(() => api.listInstalled(selected!.tid))) ?? []) : [];
+    const tid = selected?.tid;
+    installed = tid ? ((await run(() => api.listInstalled(tid))) ?? []) : [];
+    const c = tid && installed.length > 1 ? await api.listConflicts(tid).catch(() => []) : [];
+    if (selected?.tid === tid) conflicts = c;
+  }
+
+  /** Mod do catálogo com versão diferente da instalada (só quando as duas são conhecidas). */
+  const newer = (i: InstalledView) => {
+    const m = catalog?.mods.find((m) => m.id === i.modId);
+    return m?.version && i.version && m.version !== i.version ? m : undefined;
+  };
+
+  async function toggle(i: InstalledView) {
+    await run(() => api.setModEnabled(i.tid, i.folder, !i.enabled));
+    await refreshInstalled();
   }
 
   async function install(m: ModEntry, only?: string) {
+    await stage(() => api.prepareInstall(selected!.tid, m.id), only);
+  }
+
+  async function installLocal() {
+    if (!selected || busy) return;
+    const f = await open({ multiple: false, filters: [{ name: t("modArchive"), extensions: ["zip", "7z", "rar"] }] });
+    if (typeof f === "string") await stage(() => api.prepareLocal(selected!.tid, f));
+  }
+
+  async function stage(prep: () => Promise<Prepared>, only?: string) {
     if (!selected || busy) return;
     busy = true;
     notice = "";
     progress = { received: 0, total: null };
-    const p = await run(() => api.prepareInstall(selected!.tid, m.id));
+    const p = await run(prep);
     progress = null;
     if (!p) {
       busy = false;
@@ -438,7 +495,7 @@
     busy = false;
   }
 
-  async function remove(i: Installed) {
+  async function remove(i: InstalledView) {
     const ok = await confirm(t("confirmRemove", { name: i.folder }), {
       title: "Eden Mod Manager",
       kind: "warning",
@@ -485,19 +542,20 @@
   });
 </script>
 
-{#snippet modRow(m: ModEntry)}
+{#snippet modRow(m: ModEntry | GbMod)}
   <div class="row">
+    {#if "likes" in m && m.thumb}<img class="thumb" src={m.thumb} alt="" loading="lazy" />{/if}
     <div class="info">
       <div class="name" title={m.name}>{m.name}</div>
-      <div class="sub" title={modPath(m)}>{#if m.source !== "official"}<span class="src">{SOURCE_LABEL[m.source]}</span> {/if}{modPath(m)}</div>
+      <div class="sub" title={modPath(m)}>{#if m.source !== "official" && m.source !== "gamebanana"}<span class="src">{SOURCE_LABEL[m.source]}</span> {/if}{"likes" in m ? `${m.featured ? "★ " : ""}${m.likes} ♥` : modPath(m)}</div>
     </div>
     {#if m.version}
       {@const match = selected?.version === m.version}
       <span class="badge" class:ok={match} title={match ? t("versionMatch") : undefined}>{#if match}{@render icon(ICON.check)}{/if}{m.version}</span>
     {/if}
-    <span class="size">{fmtSize(m.size)}</span>
+    <span class="size">{m.size ? fmtSize(m.size) : ""}</span>
     <button disabled={busy} onclick={() => install(m)}>{t("install")}</button>
-    <button class="ghost" onclick={() => openUrl(githubUrl(m))}>{t("viewGithub")}</button>
+    <button class="ghost" onclick={() => openUrl(githubUrl(m))}>{m.source === "gamebanana" ? t("viewGb") : t("viewGithub")}</button>
   </div>
   {#if m.kind === "archive"}
     {#if (contents[m.id]?.length ?? 0) > 1}
@@ -667,7 +725,7 @@
               <input type="search" placeholder={t("filterMods")} aria-label={t("filterMods")} bind:value={search} />
             </label>
             <div class="seg" role="group" aria-label={t("srcAll")}>
-              {#each ["all", "official", "theboy181", "wiki", "ptbr"] as const as s (s)}
+              {#each ["all", "official", "theboy181", "wiki", "ptbr", "gamebanana"] as const as s (s)}
                 <button aria-pressed={srcFilter === s} onclick={() => (srcFilter = s)}>{s === "all" ? t("srcAll") : s === "official" ? t("srcOfficial") : SOURCE_LABEL[s]}</button>
               {/each}
             </div>
@@ -686,31 +744,70 @@
             </div>
 
             <section class="panel">
-              <h3 class="panel-head">{t("installed")} <span class="count">{installed.length}</span><span class="spacer"></span><button class="icon-btn" aria-label={t("openModFolder")} title={t("openModFolder")} onclick={() => api.openModFolder(selected!.tid)}>{@render icon(ICON.folder)}</button></h3>
+              <h3 class="panel-head">{t("installed")} <span class="count">{installed.length}</span><span class="spacer"></span><button class="icon-btn" disabled={busy} aria-label={t("addLocal")} title={t("addLocal")} onclick={installLocal}>{@render icon(ICON.plus)}</button><button class="icon-btn" aria-label={t("openModFolder")} title={t("openModFolder")} onclick={() => api.openModFolder(selected!.tid)}>{@render icon(ICON.folder)}</button></h3>
               {#each installed as i (i.folder)}
-                <div class="row">
+                {@const up = newer(i)}
+                <div class="row" class:off={!i.enabled}>
                   <div class="info">
                     <div class="name" title={i.folder}>{i.folder}</div>
                     <div class="sub" title={i.modId}>{i.modId}</div>
                   </div>
+                  {#if up}<span class="badge" title={t("updateAvailable", { v: up.version ?? "" })}>{i.version} → {up.version}</span>
+                    <button disabled={busy} onclick={() => install(up, i.rootKey)}>{t("updateMod")}</button>{/if}
+                  <button class="ghost" title={t("toggleHint")} onclick={() => toggle(i)}>{i.enabled ? t("disable") : t("enable")}</button>
                   <button class="danger" onclick={() => remove(i)}>{t("remove")}</button>
                 </div>
               {:else}
                 <p class="muted">{t("noInstalled")}</p>
               {/each}
-            </section>
-
-            <section class="panel">
-              <h3 class="panel-head">{t("available")} <span class="count">{available.length}</span></h3>
-              {#each available as m (m.id)}{@render modRow(m)}{:else}
-                <p class="muted">{q || srcFilter !== "all" || onlyMatch ? t("nothingMatches") : t("noAvailable")}</p>
+              {#each conflicts as c (c.folders.join("|"))}
+                <div class="row conflict" title={c.sample}>
+                  <div class="info">
+                    <div class="name">{t("conflict", { folders: c.folders.join(" × "), n: c.count })}</div>
+                    <div class="sub">{c.sample}</div>
+                  </div>
+                </div>
               {/each}
             </section>
 
-            {#if possible.length}
+            {#if srcFilter !== "gamebanana"}
+              <section class="panel">
+                <h3 class="panel-head">{t("available")} <span class="count">{available.length}</span></h3>
+                {#each available as m (m.id)}{@render modRow(m)}{:else}
+                  <p class="muted">{q || srcFilter !== "all" || onlyMatch ? t("nothingMatches") : t("noAvailable")}</p>
+                {/each}
+              </section>
+            {/if}
+
+            {#if possible.length && srcFilter !== "gamebanana"}
               <section class="panel">
                 <h3 class="panel-head">{t("possible")} <span class="count">{possible.length}</span></h3>
                 {#each possible as m (m.id)}{@render modRow(m)}{/each}
+              </section>
+            {/if}
+
+            {#if srcFilter === "gamebanana" || (srcFilter === "all" && gb && gb.tid === selected.tid)}
+              <section class="panel">
+                <h3 class="panel-head">GameBanana <span class="count">{gbList.length}</span><span class="spacer"></span>
+                  <span class="seg" role="group" aria-label={t("gbMode")}>
+                    <button aria-pressed={!gbAll} onclick={() => setGbAll(false)}>{t("gbCurated")}</button>
+                    <button aria-pressed={gbAll} onclick={() => setGbAll(true)}>{t("gbAll")}</button>
+                  </span>
+                </h3>
+                {#if !gb || gb.tid !== selected.tid || gb.status === "loading"}
+                  <p class="muted">{gbAll ? t("gbLoadingAll") : t("gbLoading")}</p>
+                {:else if gb.status === "error"}
+                  <p class="muted">{gb.error} <button class="link" onclick={() => loadGb(selected!)}>{t("retry")}</button></p>
+                {:else if gb.status === "notfound"}
+                  <p class="muted">{t("gbNotFound")} <button class="link" onclick={() => openUrl(`https://gamebanana.com/search?_sSearchString=${encodeURIComponent(selected!.name ?? "")}`)}>{t("gbSearchSite")}</button></p>
+                {:else}
+                  {#each gbList.slice(0, gbShown) as m (m.id)}{@render modRow(m)}{:else}
+                    <p class="muted">{q ? t("nothingMatches") : gbAll ? t("gbEmptyAll") : t("gbEmptyCurated")}</p>
+                  {/each}
+                  {#if gbList.length > gbShown}
+                    <button class="ghost more" onclick={() => (gbShown += 50)}>{t("showMore", { n: gbList.length - gbShown })}</button>
+                  {/if}
+                {/if}
               </section>
             {/if}
 
@@ -961,6 +1058,8 @@
   .row:last-child { border-bottom: 0; }
   .row:hover { background: var(--ghost); }
   .row.sm { padding: 6px 16px 6px 32px; font-size: 13px; }
+  .row.off .info { opacity: 0.5; }
+  .row.conflict .name { color: var(--danger); }
   .subrows { background: var(--input); border-bottom: 1px solid var(--border-soft); }
 
   /* Sidebar de jogos + detalhe */
@@ -984,6 +1083,9 @@
   .game .avatar, .group .avatar { width: 36px; height: 36px; }
   .head { display: flex; align-items: center; gap: 14px; }
   .head img.cover { width: 56px; height: 56px; border-radius: 10px; flex-shrink: 0; }
+  .thumb { width: 48px; height: 30px; border-radius: 4px; object-fit: cover; flex-shrink: 0; background: var(--badge); }
+  .more { display: block; margin: 8px auto 12px; }
+  .panel-head .seg button { padding: 2px 10px; }
   .info { flex: 1; min-width: 0; }
   .name, .sub { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .name { font-weight: 500; }
