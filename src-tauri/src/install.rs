@@ -287,14 +287,33 @@ pub async fn prepare_install(
     if m.tid.as_deref().is_some_and(|t| !t.eq_ignore_ascii_case(&tid)) {
         return Err("Este mod é de outro jogo".into());
     }
-    let load = crate::resolve_emu(&app)?.mods_dir();
+    let (tmp, token) = new_tmp(&app)?;
+    let r = do_prepare(&app, &m, &tmp).await;
+    stage(&pending, tid, mod_id, m.version.clone(), tmp, token, r)
+}
+
+fn new_tmp(app: &AppHandle) -> Result<(PathBuf, String), String> {
+    let load = crate::resolve_emu(app)?.mods_dir();
     let token = format!(
         "{:x}",
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)
     );
     let tmp = load.join(format!("{TMP_PREFIX}{token}"));
     std::fs::create_dir_all(&tmp).map_err(|e| format!("Falha ao criar pasta temporária: {e}"))?;
-    let roots = match do_prepare(&app, &m, &tmp).await {
+    Ok((tmp, token))
+}
+
+/// Registra a instalação pendente, ou apaga a pasta temporária se a preparação falhou.
+fn stage(
+    pending: &Pending,
+    tid: String,
+    mod_id: String,
+    version: Option<String>,
+    tmp: PathBuf,
+    token: String,
+    roots: Result<Vec<Root>, String>,
+) -> Result<Prepared, String> {
+    let roots = match roots {
         Ok(r) if !r.is_empty() => r,
         Ok(_) => {
             let _ = std::fs::remove_dir_all(&tmp);
@@ -309,8 +328,25 @@ pub async fn prepare_install(
         .iter()
         .map(|r| RootInfo { key: r.key.clone(), name: r.name.clone(), file_count: r.files.len() })
         .collect();
-    pending.0.lock().insert(token.clone(), PendingInstall { tid, mod_id, version: m.version.clone(), tmp, roots });
+    pending.0.lock().insert(token.clone(), PendingInstall { tid, mod_id, version, tmp, roots });
     Ok(Prepared { token, roots: infos })
+}
+
+/// Mod baixado pelo usuário (zip/7z/rar): extrai e segue o mesmo fluxo de escolha de variantes e `commit`.
+#[tauri::command]
+pub async fn prepare_local(app: AppHandle, pending: State<'_, Pending>, tid: String, path: String) -> Result<Prepared, String> {
+    crate::emu::check_tid(&tid)?;
+    let src = PathBuf::from(&path);
+    let file = src.file_name().ok_or("Arquivo inválido")?.to_string_lossy().into_owned();
+    let (tmp, token) = new_tmp(&app)?;
+    let (arc, out) = (src, tmp.join("x"));
+    let name = stem(&file);
+    let r = tauri::async_runtime::spawn_blocking(move || extract(&arc, &out).map(|_| roots_from_extracted(&out, &name)))
+        .await
+        .map_err(|e| e.to_string())
+        .and_then(|r| r)
+        .and_then(|r| if r.is_empty() { Err("Nenhuma pasta romfs/exefs encontrada no arquivo".into()) } else { Ok(r) });
+    stage(&pending, tid, format!("local:{file}"), None, tmp, token, r)
 }
 
 fn commit(app: &AppHandle, p: PendingInstall, keys: &[String]) -> Result<Vec<Installed>, String> {
@@ -458,6 +494,42 @@ mod tests {
             assert!(unsafe_path(Path::new(p)), "{p}");
         }
         assert!(!unsafe_path(Path::new("romfs/a/b.bin")));
+    }
+
+    #[test]
+    fn extract_7z_never_writes_outside_target() {
+        let base = std::env::temp_dir().join(format!("emm-slip7-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let zp = base.join("evil.7z");
+        let mut w = sevenz_rust2::ArchiveWriter::create(&zp).unwrap();
+        for name in ["../escaped.txt", "ok/romfs/a.bin"] {
+            w.push_archive_entry(sevenz_rust2::ArchiveEntry::new_file(name), Some(&b"x"[..])).unwrap();
+        }
+        w.finish().unwrap();
+        let _ = extract(&zp, &base.join("out"));
+        assert!(!base.join("escaped.txt").exists());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn extract_zip_never_writes_outside_target() {
+        use std::io::Write as _;
+        let base = std::env::temp_dir().join(format!("emm-slip-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let zp = base.join("evil.zip");
+        let mut w = zip::ZipWriter::new(std::fs::File::create(&zp).unwrap());
+        let o = zip::write::SimpleFileOptions::default();
+        w.start_file("../escaped.txt", o).unwrap();
+        w.write_all(b"x").unwrap();
+        w.start_file("ok/romfs/a.bin", o).unwrap();
+        w.write_all(b"y").unwrap();
+        w.finish().unwrap();
+        let out = base.join("out");
+        let _ = extract(&zp, &out);
+        assert!(!base.join("escaped.txt").exists());
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

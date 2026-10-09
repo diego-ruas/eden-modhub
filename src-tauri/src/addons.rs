@@ -289,3 +289,17 @@ mod ryu_tests {
         assert_eq!(effective(&mods, &dir.join("Mod (2)").to_string_lossy()), Some(false));
     }
 }
+
+#[cfg(test)]
+mod reenable_tests {
+    use super::*;
+
+    #[test]
+    fn qt_reenable_removes_only_that_folder() {
+        let a = rewrite("", |e| e.push((7, vec!["A".into(), "B".into()])));
+        let b = rewrite(&a, |e| e[0].1.retain(|n| n != "A"));
+        assert_eq!(qt_disabled(&b, 7), HashSet::from(["B".to_string()]));
+        let c = rewrite(&b, |e| e[0].1.clear());
+        assert!(qt_disabled(&c, 7).is_empty());
+    }
+}

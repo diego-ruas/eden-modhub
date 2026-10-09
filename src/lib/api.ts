@@ -86,6 +86,7 @@ export const api = {
   listConflicts: (tid: string) => invoke<Conflict[]>("list_conflicts", { tid }),
   checkUpdate: () => invoke<UpdateCheck>("check_update"),
   installUpdate: () => invoke<void>("install_update"),
+  prepareLocal: (tid: string, path: string) => invoke<Prepared>("prepare_local", { tid, path }),
   getEmuDirs: () => invoke<EmuDir[]>("get_emu_dirs"),
   storageInfo: () => invoke<StorageInfo>("storage_info"),
   clearCache: () => invoke<void>("clear_cache"),

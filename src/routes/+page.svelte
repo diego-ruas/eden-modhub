@@ -418,11 +418,21 @@
   }
 
   async function install(m: ModEntry, only?: string) {
+    await stage(() => api.prepareInstall(selected!.tid, m.id), only);
+  }
+
+  async function installLocal() {
+    if (!selected || busy) return;
+    const f = await open({ multiple: false, filters: [{ name: t("modArchive"), extensions: ["zip", "7z", "rar"] }] });
+    if (typeof f === "string") await stage(() => api.prepareLocal(selected!.tid, f));
+  }
+
+  async function stage(prep: () => Promise<Prepared>, only?: string) {
     if (!selected || busy) return;
     busy = true;
     notice = "";
     progress = { received: 0, total: null };
-    const p = await run(() => api.prepareInstall(selected!.tid, m.id));
+    const p = await run(prep);
     progress = null;
     if (!p) {
       busy = false;
@@ -702,7 +712,7 @@
             </div>
 
             <section class="panel">
-              <h3 class="panel-head">{t("installed")} <span class="count">{installed.length}</span><span class="spacer"></span><button class="icon-btn" aria-label={t("openModFolder")} title={t("openModFolder")} onclick={() => api.openModFolder(selected!.tid)}>{@render icon(ICON.folder)}</button></h3>
+              <h3 class="panel-head">{t("installed")} <span class="count">{installed.length}</span><span class="spacer"></span><button class="icon-btn" disabled={busy} aria-label={t("addLocal")} title={t("addLocal")} onclick={installLocal}>{@render icon(ICON.plus)}</button><button class="icon-btn" aria-label={t("openModFolder")} title={t("openModFolder")} onclick={() => api.openModFolder(selected!.tid)}>{@render icon(ICON.folder)}</button></h3>
               {#each installed as i (i.folder)}
                 {@const up = newer(i)}
                 <div class="row" class:off={!i.enabled}>

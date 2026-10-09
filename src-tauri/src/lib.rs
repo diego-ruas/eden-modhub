@@ -239,6 +239,7 @@ pub fn run() {
             install::peek_archive,
             install::commit_install,
             install::cancel_install,
+            install::prepare_local,
             install::list_installed,
             install::set_mod_enabled,
             install::list_conflicts,
