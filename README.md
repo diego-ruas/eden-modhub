@@ -53,7 +53,7 @@ Optional built-in NSZ compressor. Windows, Linux and macOS.
 - **Your games, with cover art.** Reads the emulator's own game list and covers, and fetches missing ones.
 - **Four sources in one list.** Official database, TheBoy181, the Switch Mods Wiki Archive and a PT-BR translation pack, merged and de-duplicated.
 - **Filters that cut the noise.** Search by name, filter by source, or show only mods matching your installed game version.
-- **Safe installs.** Pick which variants of a package to install (resolutions, FPS, etc.), and remove them again with one click.
+- **Safe installs.** Pick which variants of a package to install (resolutions, FPS, etc.), enable or disable them without deleting (written to the emulator config, so do it with the emulator closed), update when the catalog has a newer version, see which mods contain the same `romfs`/`exefs` files, and remove them with one click.
 - **Optional NSZ compressor.** Compress NSP/XCI and decompress NSZ/XCZ, with progress and verification. The tool is downloaded only on first use.
 - **Bilingual UI.** English and Portuguese.
 - **Auto-update.** Checks for new versions on launch (can be turned off in Settings) and updates in one click (the portable build replaces itself, with signature verification).

@@ -7,7 +7,7 @@
   import { openUrl } from "@tauri-apps/plugin-opener";
   import {
     api, githubUrl, modPath, SOURCE_LABEL, norm,
-    type Catalog, type Game, type Installed, type ModEntry, type NszOp, type Prepared, type RomFile,
+    type Catalog, type Conflict, type Game, type InstalledView, type ModEntry, type NszOp, type Prepared, type RomFile,
     type Emu, type RootInfo, type Source, type UpdateCheck, type EmuDir, type StorageInfo,
   } from "$lib/api";
   import { EMU_HINT, EMU_NAME, i18n, locale, setLang, t, trErr, type Lang } from "$lib/i18n.svelte";
@@ -17,7 +17,8 @@
   let catalog = $state<Catalog | null>(null);
   let games = $state<Game[]>([]);
   let selected = $state<Game | null>(null);
-  let installed = $state<Installed[]>([]);
+  let installed = $state<InstalledView[]>([]);
+  let conflicts = $state<Conflict[]>([]);
   let gameFilter = $state("");
   let contents = $state<Record<string, RootInfo[]>>({});
   const PEEK_MAX = 30 * 1048576;
@@ -313,6 +314,7 @@
     emuDir = i?.dir ?? null;
     selected = null;
     installed = [];
+    conflicts = [];
     roms = [];
     picked = [];
     nszLog = "";
@@ -398,7 +400,21 @@
   }
 
   async function refreshInstalled() {
-    installed = selected ? ((await run(() => api.listInstalled(selected!.tid))) ?? []) : [];
+    const tid = selected?.tid;
+    installed = tid ? ((await run(() => api.listInstalled(tid))) ?? []) : [];
+    const c = tid && installed.length > 1 ? await api.listConflicts(tid).catch(() => []) : [];
+    if (selected?.tid === tid) conflicts = c;
+  }
+
+  /** Mod do catálogo com versão diferente da instalada (só quando as duas são conhecidas). */
+  const newer = (i: InstalledView) => {
+    const m = catalog?.mods.find((m) => m.id === i.modId);
+    return m?.version && i.version && m.version !== i.version ? m : undefined;
+  };
+
+  async function toggle(i: InstalledView) {
+    await run(() => api.setModEnabled(i.tid, i.folder, !i.enabled));
+    await refreshInstalled();
   }
 
   async function install(m: ModEntry, only?: string) {
@@ -438,7 +454,7 @@
     busy = false;
   }
 
-  async function remove(i: Installed) {
+  async function remove(i: InstalledView) {
     const ok = await confirm(t("confirmRemove", { name: i.folder }), {
       title: "Eden Mod Manager",
       kind: "warning",
@@ -688,15 +704,27 @@
             <section class="panel">
               <h3 class="panel-head">{t("installed")} <span class="count">{installed.length}</span><span class="spacer"></span><button class="icon-btn" aria-label={t("openModFolder")} title={t("openModFolder")} onclick={() => api.openModFolder(selected!.tid)}>{@render icon(ICON.folder)}</button></h3>
               {#each installed as i (i.folder)}
-                <div class="row">
+                {@const up = newer(i)}
+                <div class="row" class:off={!i.enabled}>
                   <div class="info">
                     <div class="name" title={i.folder}>{i.folder}</div>
                     <div class="sub" title={i.modId}>{i.modId}</div>
                   </div>
+                  {#if up}<span class="badge" title={t("updateAvailable", { v: up.version ?? "" })}>{i.version} → {up.version}</span>
+                    <button disabled={busy} onclick={() => install(up, i.rootKey)}>{t("updateMod")}</button>{/if}
+                  <button class="ghost" title={t("toggleHint")} onclick={() => toggle(i)}>{i.enabled ? t("disable") : t("enable")}</button>
                   <button class="danger" onclick={() => remove(i)}>{t("remove")}</button>
                 </div>
               {:else}
                 <p class="muted">{t("noInstalled")}</p>
+              {/each}
+              {#each conflicts as c (c.folders.join("|"))}
+                <div class="row conflict" title={c.sample}>
+                  <div class="info">
+                    <div class="name">{t("conflict", { folders: c.folders.join(" × "), n: c.count })}</div>
+                    <div class="sub">{c.sample}</div>
+                  </div>
+                </div>
               {/each}
             </section>
 
@@ -961,6 +989,8 @@
   .row:last-child { border-bottom: 0; }
   .row:hover { background: var(--ghost); }
   .row.sm { padding: 6px 16px 6px 32px; font-size: 13px; }
+  .row.off .info { opacity: 0.5; }
+  .row.conflict .name { color: var(--danger); }
   .subrows { background: var(--input); border-bottom: 1px solid var(--border-soft); }
 
   /* Sidebar de jogos + detalhe */

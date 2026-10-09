@@ -1,3 +1,4 @@
+mod addons;
 mod catalog;
 mod emu;
 mod install;
@@ -239,6 +240,8 @@ pub fn run() {
             install::commit_install,
             install::cancel_install,
             install::list_installed,
+            install::set_mod_enabled,
+            install::list_conflicts,
             install::uninstall,
             nsz::nsz_run,
             nsz::nsz_can_verify,

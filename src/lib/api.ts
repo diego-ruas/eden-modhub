@@ -45,6 +45,8 @@ export type Installed = {
   version: string | null;
   installedAt: number;
 };
+export type InstalledView = Installed & { enabled: boolean };
+export type Conflict = { folders: string[]; count: number; sample: string };
 
 export type Emu = "eden" | "yuzu" | "ryujinx";
 export type RomFile = { path: string; name: string; ext: string; size: number };
@@ -78,7 +80,10 @@ export const api = {
   getCatalog: (force: boolean) => invoke<Catalog>("get_catalog", { force }),
   listGames: () => invoke<Game[]>("list_games"),
   gameCover: (tid: string) => invoke<string | null>("game_cover", { tid }),
-  listInstalled: (tid: string) => invoke<Installed[]>("list_installed", { tid }),
+  listInstalled: (tid: string) => invoke<InstalledView[]>("list_installed", { tid }),
+  setModEnabled: (tid: string, folder: string, enabled: boolean) =>
+    invoke<void>("set_mod_enabled", { tid, folder, enabled }),
+  listConflicts: (tid: string) => invoke<Conflict[]>("list_conflicts", { tid }),
   checkUpdate: () => invoke<UpdateCheck>("check_update"),
   installUpdate: () => invoke<void>("install_update"),
   getEmuDirs: () => invoke<EmuDir[]>("get_emu_dirs"),

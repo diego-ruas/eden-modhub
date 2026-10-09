@@ -6,6 +6,9 @@ use std::sync::LazyLock;
 
 pub const UA: &str = "Eden-Mod-Manager";
 
+/// Cliente único: reaproveita conexões e TLS entre catálogo e downloads.
+pub static HTTP: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
+
 /// Fontes de mods, em ordem de prioridade (o primeiro vence duplicatas).
 /// Wiki = espelho do wiki oficial do yuzu (sucessor do LexouilleTM/yuzu-mods-archive, removido).
 /// Ptbr = traduções PT-BR num .zip de release (não é árvore de repositório; ver `pack.rs`).
@@ -333,7 +336,7 @@ pub fn now_secs() -> u64 {
 
 async fn fetch_tree(source: Source) -> Result<(String, Vec<TreeItem>), String> {
     let url = format!("https://api.github.com/repos/{}/git/trees/{}?recursive=1", source.repo(), source.branch());
-    let resp = reqwest::Client::new()
+    let resp = HTTP
         .get(&url)
         .header("User-Agent", UA)
         .send()

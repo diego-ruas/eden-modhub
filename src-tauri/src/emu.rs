@@ -90,7 +90,7 @@ fn xdg_sibling(dir: &Path, sub: &str) -> PathBuf {
     [flatpak, xdg].into_iter().flatten().find(|p| p.as_path() != dir && p.exists()).unwrap_or(inner)
 }
 
-fn qt_config(dir: &Path) -> PathBuf {
+pub(crate) fn qt_config(dir: &Path) -> PathBuf {
     xdg_sibling(dir, "config").join("qt-config.ini")
 }
 
