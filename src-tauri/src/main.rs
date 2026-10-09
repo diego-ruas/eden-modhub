@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    eden_modhub_lib::run()
+    eden_mod_manager_lib::run()
 }

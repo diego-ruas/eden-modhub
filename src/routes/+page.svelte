@@ -667,7 +667,7 @@
               <input type="search" placeholder={t("filterMods")} aria-label={t("filterMods")} bind:value={search} />
             </label>
             <div class="seg" role="group" aria-label={t("srcAll")}>
-              {#each ["all", "official", "theboy181", "wiki"] as const as s (s)}
+              {#each ["all", "official", "theboy181", "wiki", "ptbr"] as const as s (s)}
                 <button aria-pressed={srcFilter === s} onclick={() => (srcFilter = s)}>{s === "all" ? t("srcAll") : s === "official" ? t("srcOfficial") : SOURCE_LABEL[s]}</button>
               {/each}
             </div>

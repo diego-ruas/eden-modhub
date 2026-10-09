@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Eden Mod Manager (formerly Eden ModHub; the crate, binary and identifier keep the `eden-modhub` naming on purpose): desktop app (Tauri 2 + SvelteKit 5 + Rust) to browse, install and manage Switch mods for Eden, yuzu and Ryujinx, with an optional NSZ compressor and a self-updater. Repo: `pendiego/Eden-Mod-Manager`.
+Eden Mod Manager: desktop app (Tauri 2 + SvelteKit 5 + Rust) to browse, install and manage Switch mods for Eden, yuzu and Ryujinx, with an optional NSZ compressor and a self-updater. Repo: `pendiego/Eden-Mod-Manager`. The old name survives in exactly two places on purpose, both for compatibility with installed copies: the bundle `identifier` in `tauri.conf.json` (changing it moves the app data folder, so users would lose settings and the installed-mods manifest) and the legacy `EdenModHub-portable.zip` asset (see Portable mode).
 
 ## Layout
 
@@ -12,6 +12,7 @@ Eden Mod Manager (formerly Eden ModHub; the crate, binary and identifier keep th
 | `src-tauri/src/lib.rs` | `run()`, command registration, `app_dir`, `portable_dir`, settings |
 | `src-tauri/src/emu.rs` | Emulator detection, data folders, game list |
 | `src-tauri/src/catalog.rs` | Mod catalogs (official, TheBoy181, Wiki), cache, covers. Defines `UA` |
+| `src-tauri/src/pack.rs` | PT-BR translation pack: one release `.zip` read by HTTP Range (list from the central directory, extract only one TID). GitHub's CDN rejects suffix ranges (`bytes=-N`) with 501 |
 | `src-tauri/src/install.rs` | `download` (emits `download-progress`), install/uninstall, manifest |
 | `src-tauri/src/nsz.rs` | NSZ tool download and runs |
 | `src-tauri/src/update.rs` | `check_update` / `install_update`, portable self-replace, minisign `verify` |

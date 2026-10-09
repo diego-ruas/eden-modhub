@@ -2,6 +2,7 @@ mod catalog;
 mod emu;
 mod install;
 mod nsz;
+mod pack;
 mod prefs;
 mod update;
 
@@ -202,6 +203,7 @@ async fn game_cover(app: AppHandle, tid: String) -> Option<String> {
 
 #[tauri::command]
 fn open_mod_folder(app: AppHandle, tid: String) -> Result<(), String> {
+    emu::check_tid(&tid)?;
     use tauri_plugin_opener::OpenerExt;
     let dir = resolve_emu(&app)?.tid_dir(&tid);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;

@@ -13,3 +13,10 @@ dist-portable
 
 # Planos de trabalho locais
 *_PLAN.md
+
+# Ferramentas de agentes / CodeGraph
+.codegraph/
+.omp/
+.claude/
+.cursor/
+.agents/

@@ -51,7 +51,7 @@ Optional built-in NSZ compressor. Windows, Linux and macOS.
 
 - **Finds your emulator automatically.** Detects the data folder (including Flatpak and portable `user` setups) and your game folders.
 - **Your games, with cover art.** Reads the emulator's own game list and covers, and fetches missing ones.
-- **Three mod catalogs in one list.** Official database, TheBoy181 and the Switch Mods Wiki Archive, merged and de-duplicated.
+- **Four sources in one list.** Official database, TheBoy181, the Switch Mods Wiki Archive and a PT-BR translation pack, merged and de-duplicated.
 - **Filters that cut the noise.** Search by name, filter by source, or show only mods matching your installed game version.
 - **Safe installs.** Pick which variants of a package to install (resolutions, FPS, etc.), and remove them again with one click.
 - **Optional NSZ compressor.** Compress NSP/XCI and decompress NSZ/XCZ, with progress and verification. The tool is downloaded only on first use.
@@ -118,7 +118,7 @@ Built with [Tauri 2](https://tauri.app), [SvelteKit](https://svelte.dev) and Rus
 
 ## Credits
 
-Mod data comes from [Switch-Emulator-Mod-Database](https://github.com/ADEMOLA200/Switch-Emulator-Mod-Database), [theboy181/switch-ptchtxt-mods](https://github.com/theboy181/switch-ptchtxt-mods) and [Switch-Mods-Wiki-Archive](https://github.com/amakvana/Switch-Mods-Wiki-Archive). Compression by [nsz](https://github.com/nicoboss/nsz). Cover art from [nlib](https://api.nlib.cc).
+Mod data comes from [Switch-Emulator-Mod-Database](https://github.com/ADEMOLA200/Switch-Emulator-Mod-Database), [theboy181/switch-ptchtxt-mods](https://github.com/theboy181/switch-ptchtxt-mods) and [Switch-Mods-Wiki-Archive](https://github.com/amakvana/Switch-Mods-Wiki-Archive). PT-BR translations from [staticpiratex/Traducoes-SWITCH-PTBR](https://github.com/staticpiratex/Traducoes-SWITCH-PTBR). Compression by [nsz](https://github.com/nicoboss/nsz). Cover art from [nlib](https://api.nlib.cc).
 
 Eden Mod Manager is not affiliated with Nintendo or any emulator project. Use it only with games and keys you legally own.
 

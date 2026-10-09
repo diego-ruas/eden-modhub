@@ -1,6 +1,6 @@
 [package]
-name = "eden-modhub"
-version = "0.2.3"
+name = "eden-mod-manager"
+version = "0.2.4"
 description = "Instalador de mods e compressor NSZ para Eden, yuzu e Ryujinx"
 authors = ["pendiego"]
 license = "MIT"
@@ -8,7 +8,7 @@ repository = "https://github.com/pendiego/Eden-Mod-Manager"
 edition = "2021"
 
 [lib]
-name = "eden_modhub_lib"
+name = "eden_mod_manager_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

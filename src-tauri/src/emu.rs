@@ -132,6 +132,15 @@ impl Emu {
     }
 }
 
+/// O TID vem do webview e vira nome de pasta: só 16 dígitos hexadecimais (nada de `..`, `\` ou caminho absoluto).
+pub fn check_tid(tid: &str) -> Result<(), String> {
+    if tid.len() == 16 && tid.bytes().all(|b| b.is_ascii_hexdigit()) {
+        Ok(())
+    } else {
+        Err("TID inválido".into())
+    }
+}
+
 /// TID do jogo base: updates (+0x800) e DLCs (+0x1000…) caem no app (últimos 13 bits zerados).
 fn base_tid(tid: &str) -> String {
     u64::from_str_radix(tid, 16).map(|v| format!("{:016X}", v & !0x1FFF)).unwrap_or_else(|_| tid.to_string())
@@ -294,7 +303,7 @@ mod tests {
 
     #[test]
     fn ryujinx_layout() {
-        let dir = std::env::temp_dir().join("modhub-ryu-test");
+        let dir = std::env::temp_dir().join("eden-mod-manager-ryu-test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("Config.json"), r#"{"game_dirs":["D:/Jogos","E:/x"]}"#).unwrap();
@@ -308,7 +317,7 @@ mod tests {
 
     #[test]
     fn flatpak_layout_finds_config_outside_data_dir() {
-        let root = std::env::temp_dir().join("modhub-flatpak-test");
+        let root = std::env::temp_dir().join("eden-mod-manager-flatpak-test");
         let _ = std::fs::remove_dir_all(&root);
         let data = root.join("data").join("yuzu");
         std::fs::create_dir_all(&data).unwrap();

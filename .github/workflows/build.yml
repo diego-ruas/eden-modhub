@@ -51,7 +51,7 @@ jobs:
           # o atualizador dos portáteis já distribuídos (<= 0.2.2), que procuram esse nome e EdenModHub.exe.
           foreach ($n in "EdenModManager", "EdenModHub") {
             New-Item -ItemType Directory "portable-$n" | Out-Null
-            Copy-Item src-tauri/target/release/eden-modhub.exe "portable-$n/$n.exe"
+            Copy-Item src-tauri/target/release/eden-mod-manager.exe "portable-$n/$n.exe"
             New-Item "portable-$n/portable" -ItemType File | Out-Null
             Compress-Archive "portable-$n/*" "$n-portable.zip"
             npx tauri signer sign -k "$env:TAURI_SIGNING_PRIVATE_KEY" -p "$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD" "$n-portable.zip"
@@ -61,7 +61,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
       - uses: actions/upload-artifact@v4
         with:
-          name: eden-modhub-${{ matrix.os }}
+          name: eden-mod-manager-${{ matrix.os }}
           path: |
             src-tauri/target/release/bundle/*/*
             EdenModManager-portable.zip
