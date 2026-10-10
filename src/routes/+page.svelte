@@ -51,6 +51,7 @@
   const gbPendingMore = new Map<number, GbMore>();
   let gbSort = $state<"likes" | "newest" | "views" | "name">("likes");
   let gbFeaturedOnly = $state(false);
+  let gbCategory = $state<string>("all");
   let hideNsfw = $state(true);
   onMount(() => {
     const savedNsfw = localStorage.getItem("hideNsfw");
@@ -293,7 +294,31 @@
       return k && (k.includes(g) || g.includes(k));
     });
   });
-  // Busca e ordenação do GameBanana: palavras-chave, ID, destaque e ordenação.
+  // Categorias encontradas nos mods do jogo atual
+  const gbCategories = $derived.by(() => {
+    if (!gb || !selected || gb.tid !== selected.tid || gb.status !== "ok") return [];
+    const set = new Set<string>();
+    for (const m of gb.mods) {
+      if (m.category) set.add(m.category);
+    }
+    return Array.from(set).sort();
+  });
+
+  const gbCategoryCounts = $derived.by(() => {
+    const counts: Record<string, number> = { all: 0 };
+    if (!gb || !selected || gb.tid !== selected.tid || gb.status !== "ok") return counts;
+    for (const m of gb.mods) {
+      if (hideNsfw && m.nsfw) continue;
+      if (gbFeaturedOnly && !m.featured) continue;
+      counts.all = (counts.all ?? 0) + 1;
+      if (m.category) {
+        counts[m.category] = (counts[m.category] ?? 0) + 1;
+      }
+    }
+    return counts;
+  });
+
+  // Busca e ordenação do GameBanana: palavras-chave, ID, destaque, categoria e ordenação.
   const gbList = $derived.by(() => {
     if (!gb || !selected || gb.tid !== selected.tid || gb.status !== "ok") return [];
     const query = q.trim().toLowerCase();
@@ -302,6 +327,7 @@
     const filtered = gb.mods.filter((m) => {
       if (gbFeaturedOnly && !m.featured) return false;
       if (hideNsfw && m.nsfw) return false;
+      if (gbCategory !== "all" && m.category !== gbCategory) return false;
       if (!terms.length) return true;
       const name = m.name.toLowerCase();
       const id = m.id.toLowerCase();
@@ -459,6 +485,7 @@
   function setGbAll(on: boolean) {
     if (on === gbAll) return;
     gbAll = on;
+    gbCategory = "all";
     localStorage.setItem("gbAll", on ? "on" : "off");
     if (selected) void loadGb(selected);
   }
@@ -486,6 +513,7 @@
 
   async function select(g: Game) {
     selected = g;
+    gbCategory = "all";
     notice = "";
     await refreshInstalled();
     void loadGb(g);
@@ -773,7 +801,10 @@
         {#if working}<span class="card-bar"><span class="card-fill" class:indet={!progress?.total} style:width={progress?.total ? `${Math.min(100, (progress.received / progress.total) * 100)}%` : undefined}></span></span>{/if}
       </span>
       <span class="card-name">{m.featured ? "★ " : ""}{m.name}</span>
-      <span class="card-meta"><span title={t("gbViews")}>👁 {compact(m.views)}</span><span>{compact(m.likes)} ♥</span></span>
+      <span class="card-meta">
+        {#if m.category}<span class="card-cat">{m.category}</span>{:else}<span></span>{/if}
+        <span class="card-stats"><span title={t("gbViews")}>👁 {compact(m.views)}</span><span>{compact(m.likes)} ♥</span></span>
+      </span>
     </button>
     <button class="card-btn" class:installed={isInstalled} disabled={busy || isInstalled} aria-busy={working} onclick={() => install(m)}>{#if working}{@render spinner()}{:else if isInstalled}{@render icon(ICON.check)}{/if}{working ? t("gbInstalling") : failed ? t("retry") : isInstalled ? t("gbInstalled") : t("install")}</button>
   </div>
@@ -1054,6 +1085,26 @@
                   </span>
                 </h3>
                 <div class="warn" role="note">{@render icon(ICON.alert)}<p><strong>{t("gbWarnTitle")}</strong> {t("gbWarn")}</p></div>
+                {#if gbCategories.length > 1 || gbCategory !== "all"}
+                  <div class="cats-row">
+                    <div class="seg" role="group" aria-label={t("gbCategories")}>
+                      <button
+                        aria-pressed={gbCategory === "all"}
+                        onclick={() => (gbCategory = "all")}
+                      >
+                        {t("catAll")} <span class="count">{gbCategoryCounts.all ?? 0}</span>
+                      </button>
+                      {#each gbCategories as cat (cat)}
+                        <button
+                          aria-pressed={gbCategory === cat}
+                          onclick={() => (gbCategory = cat)}
+                        >
+                          {cat} <span class="count">{gbCategoryCounts[cat] ?? 0}</span>
+                        </button>
+                      {/each}
+                    </div>
+                  </div>
+                {/if}
                 {#if !gb || gb.tid !== selected.tid || gb.status === "loading"}
                   <p class="muted loading">{@render spinner()}{gbAll ? t("gbLoadingAll") : t("gbLoading")}</p>
                   <div class="cards" aria-hidden="true">{#each { length: 12 } as _, i (i)}<div class="card skel"></div>{/each}</div>
@@ -1066,7 +1117,7 @@
                     {#each gbList.slice(0, gbShown) as m (m.id)}{@render gbCard(m)}{/each}
                   </div>
                   {#if !gbList.length}
-                    <p class="muted">{q ? t("nothingMatches") : gbAll ? t("gbEmptyAll") : t("gbEmptyCurated")}</p>
+                    <p class="muted">{q || gbCategory !== "all" ? t("nothingMatches") : gbAll ? t("gbEmptyAll") : t("gbEmptyCurated")}</p>
                   {/if}
                   {#if gbList.length > gbShown}
                     <button class="ghost more" onclick={() => (gbShown += 50)}>{t("showMore", { n: gbList.length - gbShown })}</button>
@@ -1136,6 +1187,7 @@
       <div class="gbm-img">{#if img}<img src={img} alt="" />{/if}</div>
       <h3 id="gbm-title">{m.name}</h3>
       <div class="gbm-stats">
+        {#if m.category}<span class="card-cat">{m.category}</span>{/if}
         {#if gbDetail?.submitter}<span>{t("gbBy", { name: gbDetail.submitter })}</span>{/if}
         {#if gbDetail?.version}<span>v{gbDetail.version}</span>{/if}
         <span title={t("gbViews")}>👁 {compact(m.views)}</span>
@@ -1454,7 +1506,9 @@
   .card-fill { display: block; height: 100%; background: var(--accent); transition: width 0.2s; }
   .card-fill.indet { width: 100%; opacity: 0.6; animation: pulse 1s ease-in-out infinite; }
   .card-name { display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; white-space: normal; box-sizing: content-box; height: 2.6em; margin: 8px 10px 0; font-weight: 500; line-height: 1.3; }
-  .card-meta { display: flex; justify-content: space-between; gap: 8px; margin: 4px 10px 8px; color: var(--muted); font-size: 12px; line-height: 18px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .card-meta { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin: 4px 10px 8px; color: var(--muted); font-size: 12px; line-height: 18px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .card-cat { max-width: 95px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--muted); background: var(--badge); padding: 0 5px; border-radius: 4px; font-weight: 500; }
+  .card-stats { display: flex; gap: 8px; margin-left: auto; }
   .card-btn { margin: auto 10px 10px; }
   .card-btn.installed { opacity: 0.9; background: var(--ghost); color: var(--ok); border-color: var(--ok); cursor: default; }
   .card-btn.installed :global(.icon) { width: 12px; height: 12px; margin-right: 4px; vertical-align: -1px; }
@@ -1471,6 +1525,9 @@
   .warn { display: flex; gap: 10px; align-items: flex-start; margin: 14px 14px 0; padding: 10px 12px; border-radius: 10px; background: rgb(245 166 35 / 0.12); border: 1px solid rgb(245 166 35 / 0.45); font-size: 13px; line-height: 1.45; }
   .warn p { margin: 0; }
   .warn :global(.icon), .gbm-warn :global(.icon) { flex-shrink: 0; width: 16px; height: 16px; margin-top: 1px; color: #e09a1a; }
+  .cats-row { display: flex; overflow-x: auto; margin: 12px 14px 0; }
+  .cats-row .seg { flex-wrap: wrap; gap: 2px; }
+  .cats-row .count { margin-left: 4px; opacity: 0.7; font-size: 11px; font-variant-numeric: tabular-nums; }
   .dependency-notice { flex-shrink: 0; flex-wrap: wrap; align-items: center; margin: 10px 28px 0; }
   .dependency-notice p { flex: 1 1 240px; min-width: 0; }
   .dependency-notice button { white-space: normal; text-align: left; }

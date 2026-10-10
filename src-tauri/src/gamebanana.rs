@@ -66,6 +66,8 @@ struct Rec {
     views: u32,
     #[serde(rename = "_bHasContentRatings", default)]
     has_content_ratings: bool,
+    #[serde(rename = "_aRootCategory", default)]
+    root_category: serde_json::Value,
     // Value: APIs PHP mandam `[]` no lugar de objeto vazio
     #[serde(rename = "_aPreviewMedia", default)]
     media: serde_json::Value,
@@ -247,8 +249,8 @@ pub struct GbMod {
     pub views: u32,
     pub featured: bool,
     pub nsfw: bool,
+    pub category: Option<String>,
 }
-
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct GbMore {
@@ -286,12 +288,14 @@ fn to_gb_mods(recs: BTreeMap<u64, Rec>, tid: &str) -> Vec<GbMod> {
                 || n_lower.contains("+18")
                 || n_lower.contains("18+")
                 || n_lower.contains("nude");
+            let category = r.root_category.get("_sName").and_then(|v| v.as_str()).map(String::from);
             GbMod {
                 thumb: image(&r.media, &["_sFile530", "_sFile100"]),
                 likes: r.likes,
                 views: r.views,
                 featured: r.featured,
                 nsfw,
+                category,
                 entry: ModEntry {
                     id: format!("{}{}", Source::Gamebanana.id_prefix(), r.id),
                     tid: Some(tid.to_string()),
@@ -501,12 +505,14 @@ mod tests {
     #[test]
     fn parses_sparse_index_page() {
         let j = r#"{"_aMetadata":{"_nRecordCount":2,"_bIsComplete":true,"_nPerpage":50},
-            "_aRecords":[{"_idRow":1,"_sName":"A","_bHasFiles":true,"_nLikeCount":7,"_bWasFeatured":true,"_bHasContentRatings":true,"_x":{},"_aPreviewMedia":{"_aImages":[{"_sBaseUrl":"https://x/ss","_sFile100":"100-a.jpg"}]}},
+            "_aRecords":[{"_idRow":1,"_sName":"A","_bHasFiles":true,"_nLikeCount":7,"_bWasFeatured":true,"_bHasContentRatings":true,"_aRootCategory":{"_sName":"Skins"},"_x":{},"_aPreviewMedia":{"_aImages":[{"_sBaseUrl":"https://x/ss","_sFile100":"100-a.jpg"}]}},
                          {"_idRow":2,"_sName":"B","_aPreviewMedia":[]}]}"#;
         let p: Page<Rec> = serde_json::from_str(j).unwrap();
         assert!(p.meta.complete);
         assert_eq!((p.records[0].likes, p.records[0].featured, p.records[0].has_files, p.records[0].has_content_ratings), (7, true, true, true));
+        assert_eq!(p.records[0].root_category["_sName"].as_str(), Some("Skins"));
         assert_eq!((p.records[1].likes, p.records[1].has_files, p.records[1].obsolete, p.records[1].has_content_ratings), (0, false, false, false));
+        assert!(p.records[1].root_category.is_null());
         let keys = ["_sFile530", "_sFile100"];
         assert_eq!(image(&p.records[0].media, &keys), Some("https://x/ss/100-a.jpg".into()));
         assert_eq!(image(&p.records[1].media, &keys), None);
