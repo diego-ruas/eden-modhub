@@ -17,6 +17,7 @@ const MAX_PAGES: u32 = 100;
 // páginas pedidas em paralelo; o índice pesa ~380 KB por página sem gzip
 const BATCH: u32 = 6;
 const MAX_INFLIGHT: usize = 6;
+const PREFETCH_GAMES: usize = MAX_INFLIGHT / 2;
 const TTL: Duration = Duration::from_secs(600);
 
 // pedidos simultâneos ao GameBanana (todas as varreduras juntas)
@@ -108,7 +109,7 @@ async fn get<T: serde::de::DeserializeOwned>(path: &str, query: &[(&str, String)
     resp.json().await.map_err(|e| format!("Resposta inválida: {e}"))
 }
 
-/// Resolve the Switch-specific GameBanana entry when its title carries a platform suffix.
+/// Resolve a entrada do GameBanana para Switch quando o título inclui o sufixo da plataforma.
 fn match_game(games: &[GameRec], name: &str) -> Option<u64> {
     let want = catalog::norm(name);
     games
@@ -383,13 +384,22 @@ pub async fn list(
 }
 
 /// Pré-carrega em segundo plano os mods curados de todos os jogos do usuário.
-/// Executa sequencialmente para não sobrecarregar a rede; jogos já em cache são pulados imediatamente.
+/// Já cacheados são ignorados; a concorrência HTTP continua limitada por `MAX_INFLIGHT`.
 pub async fn prefetch_curated(games: Vec<(String, String)>) {
-    for (tid, name) in games {
-        if cached(&tid, false).is_some() {
-            continue;
+    for batch in games.chunks(PREFETCH_GAMES) {
+        let jobs: Vec<_> = batch
+            .iter()
+            .filter(|(tid, _)| cached(tid, false).is_none())
+            .cloned()
+            .map(|(tid, name)| {
+                tauri::async_runtime::spawn(async move {
+                    let _ = list(None, &tid, &name, false, false).await;
+                })
+            })
+            .collect();
+        for job in jobs {
+            let _ = job.await;
         }
-        let _ = list(None, &tid, &name, false, false).await;
     }
 }
 
