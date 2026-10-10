@@ -318,7 +318,7 @@
     busy = false;
     if (c) catalog = c;
     await loadGames();
-    if (selected) void loadGb(selected);
+    if (selected) void loadGb(selected, force);
   }
 
   // Relê emulador/pasta salvos e recarrega tudo que depende deles.
@@ -397,14 +397,14 @@
 
   // GameBanana é buscado por jogo (curados por padrão) e vive fora de `catalog.mods`.
   let gbSeq = 0;
-  async function loadGb(g: Game) {
+  async function loadGb(g: Game, fresh = false) {
     if (!catalog) return;
     const seq = ++gbSeq;
     gbShown = 50;
     if (!g.name) { gb = { tid: g.tid, status: "notfound", mods: [], error: "" }; return; }
     gb = { tid: g.tid, status: "loading", mods: [], error: "" };
     try {
-      const r = await api.gamebananaMods(g.tid, g.name, gbAll);
+      const r = await api.gamebananaMods(g.tid, g.name, gbAll, fresh);
       if (seq !== gbSeq) return;
       gb = { tid: g.tid, status: r.found ? "ok" : "notfound", mods: r.mods, error: "" };
     } catch (e) {
@@ -426,16 +426,22 @@
     );
   }
 
-  // Lê pacotes do jogo em sequência (menores primeiro); para se trocar de jogo.
+  // Lê pacotes do jogo (menores primeiro) com PEEK_WORKERS leituras simultâneas; para se trocar de jogo.
+  const PEEK_WORKERS = 3;
   async function peekAll(g: Game, mods: ModEntry[]) {
-    for (const m of mods) {
-      if (selected?.tid !== g.tid) return;
-      try {
-        contents[m.id] = await api.peekArchive(m.id);
-      } catch {
-        // pacote ilegível: fica só com "Instalar", que mostra o erro real
+    let next = 0;
+    const worker = async () => {
+      while (next < mods.length) {
+        const m = mods[next++];
+        if (selected?.tid !== g.tid) return;
+        try {
+          contents[m.id] = await api.peekArchive(m.id);
+        } catch {
+          // pacote ilegível: fica só com "Instalar", que mostra o erro real
+        }
       }
-    }
+    };
+    await Promise.all(Array.from({ length: PEEK_WORKERS }, worker));
     if (!busy) progress = null;
   }
 
@@ -463,13 +469,16 @@
     await stage(() => api.prepareInstall(selected!.tid, m.id), only);
   }
 
+  const gbDetails = new Map<string, GbDetail>();
   async function openGb(m: GbMod) {
     gbOpen = m;
-    gbDetail = null;
+    gbDetail = gbDetails.get(m.id) ?? null;
     gbDetailErr = "";
     openModal(gbDlg);
+    if (gbDetail) return;
     try {
       const d = await api.gamebananaDetail(Number(m.files[0].src));
+      gbDetails.set(m.id, d);
       if (gbOpen?.id === m.id) gbDetail = d;
     } catch (e) {
       if (gbOpen?.id === m.id) gbDetailErr = trErr(String(e));
@@ -611,7 +620,7 @@
   <div class="card" class:working class:failed>
     <button class="card-main" title={m.name} onclick={() => openGb(m)}>
       <span class="card-img">
-        {#if m.thumb}<img src={m.thumb} alt="" loading="lazy" />{/if}
+        {#if m.thumb}<img src={m.thumb} alt="" loading="lazy" decoding="async" />{/if}
         {#if failed}<span class="card-flag bad">{@render icon(ICON.alert)}{t("gbFailed")}</span>
         {:else if isInstalled}<span class="card-flag">{@render icon(ICON.check)}{t("gbInstalled")}</span>{/if}
         {#if working}<span class="card-bar"><span class="card-fill" class:indet={!progress?.total} style:width={progress?.total ? `${Math.min(100, (progress.received / progress.total) * 100)}%` : undefined}></span></span>{/if}
