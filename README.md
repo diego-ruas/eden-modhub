@@ -18,7 +18,15 @@ Optional built-in NSZ compressor. Windows, Linux and macOS.
 ## Screenshots
 
 <p align="center">
-  <img src="docs/screenshots/mods.png" alt="Installed and available mods for a game" width="720" />
+  <img src="docs/screenshots/mods.png" alt="Installed and available repository mods for a game" width="720" />
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/gamebanana.png" alt="GameBanana tab with third-party content notice and mod cards" width="720" />
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/gamebanana-popup.png" alt="GameBanana mod details popup" width="720" />
 </p>
 
 <table>
