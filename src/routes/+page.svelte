@@ -693,6 +693,7 @@
 <svelte:window onfocus={refreshFw} />
 
 {#snippet modRow(m: ModEntry | GbMod)}
+  {@const isInstalled = installed.some((i) => i.modId === m.id)}
   <div class="row">
     {#if "likes" in m && m.thumb}<img class="thumb" src={m.thumb} alt="" loading="lazy" />{/if}
     <div class="info">
@@ -704,7 +705,7 @@
       <span class="badge" class:ok={match} title={match ? t("versionMatch") : undefined}>{#if match}{@render icon(ICON.check)}{/if}{m.version}</span>
     {/if}
     <span class="size">{m.size ? fmtSize(m.size) : ""}</span>
-    <button disabled={busy} onclick={() => install(m)}>{t("install")}</button>
+    <button disabled={busy || isInstalled} onclick={() => install(m)}>{isInstalled ? t("gbInstalled") : t("install")}</button>
     <button class="ghost" onclick={() => openUrl(githubUrl(m))}>{m.source === "gamebanana" ? t("viewGb") : t("viewGithub")}</button>
   </div>
   {#if m.kind === "archive"}
@@ -737,7 +738,7 @@
       <span class="card-name">{m.featured ? "★ " : ""}{m.name}</span>
       <span class="card-meta"><span title={t("gbViews")}>👁 {compact(m.views)}</span><span>{compact(m.likes)} ♥</span></span>
     </button>
-    <button class="card-btn" disabled={busy} aria-busy={working} onclick={() => install(m)}>{#if working}{@render spinner()}{/if}{working ? t("gbInstalling") : failed ? t("retry") : t("install")}</button>
+    <button class="card-btn" class:installed={isInstalled} disabled={busy || isInstalled} aria-busy={working} onclick={() => install(m)}>{#if working}{@render spinner()}{:else if isInstalled}{@render icon(ICON.check)}{/if}{working ? t("gbInstalling") : failed ? t("retry") : isInstalled ? t("gbInstalled") : t("install")}</button>
   </div>
 {/snippet}
 
@@ -1091,6 +1092,7 @@
     {#if gbOpen}
       {@const m = gbOpen}
       {@const img = gbDetail?.image ?? m.thumb}
+      {@const isInstalled = installed.some((i) => i.modId === m.id)}
       <div class="gbm-img">{#if img}<img src={img} alt="" />{/if}</div>
       <h3 id="gbm-title">{m.name}</h3>
       <div class="gbm-stats">
@@ -1118,7 +1120,7 @@
         <button class="ghost" onclick={() => openUrl(githubUrl(m))}>{t("viewGb")}</button>
         <span class="spacer"></span>
         <button class="ghost" onclick={() => gbDlg?.close()}>{t("setClose")}</button>
-        <button class="primary" disabled={busy} onclick={() => { gbDlg?.close(); install(m); }}>{t("install")}</button>
+        <button class="primary" disabled={busy || isInstalled} onclick={() => { gbDlg?.close(); install(m); }}>{isInstalled ? t("gbInstalled") : t("install")}</button>
       </div>
     {/if}
   </dialog>
@@ -1363,8 +1365,8 @@
   .games .search { width: auto; margin: 0 12px 10px; }
   .list { display: flex; flex-direction: column; gap: 1px; overflow-y: auto; min-height: 0; padding: 0 8px 12px; }
   .pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
-  .filters { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 12px 28px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
-  .filters .search { flex: 1; min-width: 180px; width: auto; max-width: 320px; }
+  .filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 28px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+  .filters .search { flex: 1 1 120px; min-width: 110px; width: auto; max-width: 240px; }
   .seg button :global(.icon) { width: 11px; height: 11px; vertical-align: -1px; margin-right: 4px; }
   .detail { display: flex; flex-direction: column; gap: 20px; overflow-y: auto; flex: 1; min-height: 0; padding: 22px 28px 32px; }
   .detail h2 { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.15; text-wrap: balance; }
@@ -1398,7 +1400,7 @@
   .card-img { position: relative; display: block; aspect-ratio: 16 / 9; overflow: hidden; background: var(--badge); }
   .card-img img { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform 0.25s; }
   .card:hover .card-img img { transform: scale(1.04); }
-  .card-flag { position: absolute; top: 6px; left: 6px; display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 10px; background: var(--ok-bg); color: var(--ok); backdrop-filter: blur(6px); font-size: 11px; font-weight: 600; }
+  .card-flag { position: absolute; top: 6px; left: 6px; display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 6px; background: #15803d; color: #ffffff; border: 1px solid #22c55e; box-shadow: 0 2px 8px rgb(0 0 0 / 0.5); font-size: 11px; font-weight: 600; letter-spacing: 0.02em; }
   .card-flag :global(.icon) { width: 12px; height: 12px; }
   .card-bar { position: absolute; left: 0; right: 0; bottom: 0; height: 4px; background: rgb(0 0 0 / 0.4); }
   .card-fill { display: block; height: 100%; background: var(--accent); transition: width 0.2s; }
@@ -1406,6 +1408,8 @@
   .card-name { display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; white-space: normal; box-sizing: content-box; height: 2.6em; margin: 8px 10px 0; font-weight: 500; line-height: 1.3; }
   .card-meta { display: flex; justify-content: space-between; gap: 8px; margin: 4px 10px 8px; color: var(--muted); font-size: 12px; line-height: 18px; white-space: nowrap; font-variant-numeric: tabular-nums; }
   .card-btn { margin: auto 10px 10px; }
+  .card-btn.installed { opacity: 0.9; background: var(--ghost); color: var(--ok); border-color: var(--ok); cursor: default; }
+  .card-btn.installed :global(.icon) { width: 12px; height: 12px; margin-right: 4px; vertical-align: -1px; }
   .card.skel { height: 238px; animation: pulse 1.2s ease-in-out infinite; pointer-events: none; }
   @keyframes pulse { 50% { opacity: 0.45; } }
   .gbmod { width: min(640px, 92vw); }
