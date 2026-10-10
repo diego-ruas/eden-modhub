@@ -108,8 +108,24 @@ async fn get<T: serde::de::DeserializeOwned>(path: &str, query: &[(&str, String)
     resp.json().await.map_err(|e| format!("Resposta inválida: {e}"))
 }
 
-/// Id do jogo no GameBanana: primeiro resultado da busca com o mesmo nome normalizado.
-/// ponytail: só nome exato; jogos com título diferente no site ficam sem mods de lá.
+/// Resolve the Switch-specific GameBanana entry when its title carries a platform suffix.
+fn match_game(games: &[GameRec], name: &str) -> Option<u64> {
+    let want = catalog::norm(name);
+    games
+        .iter()
+        .find(|g| catalog::norm(&g.name) == want)
+        .or_else(|| {
+            games.iter().find(|g| {
+                let candidate = catalog::norm(&g.name);
+                ["nintendoswitch", "switch"]
+                    .iter()
+                    .any(|suffix| candidate.strip_suffix(suffix) == Some(want.as_str()))
+            })
+        })
+        .map(|g| g.id)
+}
+
+/// Id do jogo no GameBanana; prefere nome exato e aceita o sufixo da plataforma Switch.
 async fn find_game(name: &str) -> Result<Option<u64>, String> {
     let want = catalog::norm(name);
     if let Some(&id) = GAME_IDS.lock().get(&want) {
@@ -118,10 +134,10 @@ async fn find_game(name: &str) -> Result<Option<u64>, String> {
     let q = [
         ("_sSearchString", name.to_string()),
         ("_sModelName", "Game".into()),
-        ("_nPerpage", "15".into()),
+        ("_nPerpage", "50".into()),
     ];
     let page: Page<GameRec> = get("Util/Search/Results", &q).await?;
-    let found = page.records.into_iter().find(|g| catalog::norm(&g.name) == want).map(|g| g.id);
+    let found = match_game(&page.records, name);
     if let Some(id) = found {
         GAME_IDS.lock().insert(want, id);
     }
@@ -567,6 +583,41 @@ mod tests {
         );
         // Agora pode derivar com segurança
         assert!(cached(tid, false).is_some());
+    }
+    #[test]
+    fn resolves_switch_variant_when_gamebanana_adds_platform_suffix() {
+        let games = vec![
+            GameRec {
+                id: 5866,
+                name: "The Legend of Zelda: Breath of the Wild (WiiU)".into(),
+            },
+            GameRec {
+                id: 6386,
+                name: "The Legend of Zelda: Breath of the Wild (Switch)".into(),
+            },
+        ];
+        assert_eq!(
+            match_game(&games, "The Legend of Zelda: Breath of the Wild"),
+            Some(6386)
+        );
+    }
+
+    #[test]
+    fn exact_game_name_precedes_platform_variant() {
+        let games = vec![
+            GameRec {
+                id: 1,
+                name: "The Legend of Zelda: Breath of the Wild (Switch)".into(),
+            },
+            GameRec {
+                id: 2,
+                name: "The Legend of Zelda: Breath of the Wild".into(),
+            },
+        ];
+        assert_eq!(
+            match_game(&games, "The Legend of Zelda: Breath of the Wild"),
+            Some(2)
+        );
     }
 
 }
