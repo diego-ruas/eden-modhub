@@ -663,7 +663,12 @@
       nszLog = (nszLog + e.payload + "\n").slice(-6000);
     });
     const unGbMore = listen<GbMore>("gamebanana-more", (e) => {
-      if (e.payload.tid === selected?.tid && gb && gb.tid === selected?.tid) {
+      if (
+        e.payload.tid === selected?.tid &&
+        gb &&
+        gb.tid === selected?.tid &&
+        gbAll === e.payload.all
+      ) {
         gb = { ...gb, mods: e.payload.mods };
       }
     });

@@ -19,7 +19,7 @@ export const SOURCE_LABEL: Record<Source, string> = {
 
 export type GbMod = ModEntry & { thumb: string | null; likes: number; views: number; featured: boolean };
 export type GbList = { found: boolean; mods: GbMod[] };
-export type GbMore = { tid: string; mods: GbMod[]; complete: boolean };
+export type GbMore = { tid: string; all: boolean; mods: GbMod[]; complete: boolean };
 export type GbDetail = { text: string; image: string | null; submitter: string | null; version: string | null; downloads: number; size: number; updated: number };
 export type FrameworkStatus = { needed: boolean; skyline: boolean; arcropolis: boolean | null };
 export type ModFile = { src: string; dest: string };
