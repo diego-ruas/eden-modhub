@@ -9,7 +9,7 @@
     api, githubUrl, modPath, SOURCE_LABEL, norm,
     type Catalog, type Conflict, type Game, type InstalledView, type ModEntry, type NszOp, type Prepared, type RomFile,
     type Emu, type RootInfo, type Source, type UpdateCheck, type EmuDir, type StorageInfo,
-    type GbMod,
+    type GbMod, type GbDetail,
   } from "$lib/api";
   import { EMU_HINT, EMU_NAME, i18n, locale, setLang, t, trErr, type Lang } from "$lib/i18n.svelte";
 
@@ -25,6 +25,7 @@
   const PEEK_MAX = 30 * 1048576;
   let search = $state("");
   let srcFilter = $state<Source | "all">("all");
+  let view = $state<"repo" | "gb">("repo");
   let onlyMatch = $state(false);
   let error = $state("");
   let notice = $state("");
@@ -44,6 +45,13 @@
   let gbAll = $state(localStorage.getItem("gbAll") === "on");
   let gb = $state<{ tid: string; status: "loading" | "ok" | "notfound" | "error"; mods: GbMod[]; error: string } | null>(null);
   let gbShown = $state(50);
+  let gbDlg = $state<HTMLDialogElement>();
+  let gbOpen = $state<GbMod | null>(null);
+  let gbDetail = $state<GbDetail | null>(null);
+  let gbDetailErr = $state("");
+  let installingId = $state<string | null>(null);
+  let failedId = $state<string | null>(null);
+  $effect(() => { if (!busy) installingId = null; });
   let micaOn = $state(localStorage.getItem("mica") !== "off");
   let micaOk = $state(false);
   let checked = $state<Record<string, boolean>>({});
@@ -219,6 +227,7 @@
     await loadRoms();
   }
 
+  const compact = (n: number) => n.toLocaleString(locale(), { notation: "compact", maximumFractionDigits: 1 });
   const fmtSize = (n: number) =>
     n >= 1073741824
       ? `${(n / 1073741824).toLocaleString(locale(), { minimumFractionDigits: 1, maximumFractionDigits: 1 })} GB`
@@ -449,8 +458,29 @@
   }
 
   async function install(m: ModEntry, only?: string) {
+    installingId = m.id;
+    failedId = null;
     await stage(() => api.prepareInstall(selected!.tid, m.id), only);
   }
+
+  async function openGb(m: GbMod) {
+    gbOpen = m;
+    gbDetail = null;
+    gbDetailErr = "";
+    openModal(gbDlg);
+    try {
+      const d = await api.gamebananaDetail(Number(m.files[0].src));
+      if (gbOpen?.id === m.id) gbDetail = d;
+    } catch (e) {
+      if (gbOpen?.id === m.id) gbDetailErr = trErr(String(e));
+    }
+  }
+
+  // descrição do GameBanana vem em HTML: só texto, sem renderizar markup de terceiros
+  const plain = (html: string) =>
+    (new DOMParser().parseFromString(html.replace(/<br\s*\/?>|<\/p>|<\/li>/gi, "\n"), "text/html").body.textContent ?? "")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
 
   async function installLocal() {
     if (!selected || busy) return;
@@ -466,6 +496,7 @@
     const p = await run(prep);
     progress = null;
     if (!p) {
+      failedId = installingId;
       busy = false;
       return;
     }
@@ -486,6 +517,7 @@
     prepared = null;
     busy = false;
     if (r) notice = t(emu === "ryujinx" ? "installedNoticeRyu" : "installedNotice");
+    else failedId = installingId;
     await refreshInstalled();
   }
 
@@ -570,6 +602,29 @@
       </div>
     {/if}
   {/if}
+{/snippet}
+
+{#snippet gbCard(m: GbMod)}
+  {@const isInstalled = installed.some((i) => i.modId === m.id)}
+  {@const working = busy && installingId === m.id}
+  {@const failed = !busy && failedId === m.id}
+  <div class="card" class:working class:failed>
+    <button class="card-main" title={m.name} onclick={() => openGb(m)}>
+      <span class="card-img">
+        {#if m.thumb}<img src={m.thumb} alt="" loading="lazy" />{/if}
+        {#if failed}<span class="card-flag bad">{@render icon(ICON.alert)}{t("gbFailed")}</span>
+        {:else if isInstalled}<span class="card-flag">{@render icon(ICON.check)}{t("gbInstalled")}</span>{/if}
+        {#if working}<span class="card-bar"><span class="card-fill" class:indet={!progress?.total} style:width={progress?.total ? `${Math.min(100, (progress.received / progress.total) * 100)}%` : undefined}></span></span>{/if}
+      </span>
+      <span class="card-name">{m.featured ? "★ " : ""}{m.name}</span>
+      <span class="card-meta"><span title={t("gbViews")}>👁 {compact(m.views)}</span><span>{compact(m.likes)} ♥</span></span>
+    </button>
+    <button class="card-btn" disabled={busy} aria-busy={working} onclick={() => install(m)}>{#if working}{@render spinner()}{/if}{working ? t("gbInstalling") : failed ? t("retry") : t("install")}</button>
+  </div>
+{/snippet}
+
+{#snippet spinner()}
+  <span class="spinner" aria-hidden="true"></span>
 {/snippet}
 
 {#snippet icon(d: string)}
@@ -720,17 +775,23 @@
         <div class="pane">
         {#if selected}
           <div class="filters">
+            <div class="seg tabs" role="group" aria-label={t("viewLabel")}>
+              <button aria-pressed={view === "repo"} onclick={() => (view = "repo")}>{t("viewRepo")} <span class="count">{available.length}</span></button>
+              <button aria-pressed={view === "gb"} onclick={() => (view = "gb")}>GameBanana <span class="count" title={gb?.status === "error" ? gb.error : undefined}>{#if !gb || gb.tid !== selected.tid || gb.status === "loading"}{@render spinner()}{:else if gb.status === "ok"}{gb.mods.length}{:else if gb.status === "notfound"}0{:else}!{/if}</span></button>
+            </div>
             <label class="search">
               {@render icon(ICON.search)}
               <input type="search" placeholder={t("filterMods")} aria-label={t("filterMods")} bind:value={search} />
             </label>
-            <div class="seg" role="group" aria-label={t("srcAll")}>
-              {#each ["all", "official", "theboy181", "wiki", "ptbr", "gamebanana"] as const as s (s)}
-                <button aria-pressed={srcFilter === s} onclick={() => (srcFilter = s)}>{s === "all" ? t("srcAll") : s === "official" ? t("srcOfficial") : SOURCE_LABEL[s]}</button>
-              {/each}
-            </div>
-            {#if selected.version}
-              <label class="toggle"><input type="checkbox" bind:checked={onlyMatch} /> {t("onlyMatch")} ({selected.version})</label>
+            {#if view === "repo"}
+              <div class="seg" role="group" aria-label={t("srcAll")}>
+                {#each ["all", "official", "theboy181", "wiki", "ptbr"] as const as s (s)}
+                  <button aria-pressed={srcFilter === s} onclick={() => (srcFilter = s)}>{s === "all" ? t("srcAll") : s === "official" ? t("srcOfficial") : SOURCE_LABEL[s]}</button>
+                {/each}
+              </div>
+              {#if selected.version}
+                <label class="toggle"><input type="checkbox" bind:checked={onlyMatch} /> {t("onlyMatch")} ({selected.version})</label>
+              {/if}
             {/if}
           </div>
         {/if}
@@ -770,7 +831,7 @@
               {/each}
             </section>
 
-            {#if srcFilter !== "gamebanana"}
+            {#if view === "repo"}
               <section class="panel">
                 <h3 class="panel-head">{t("available")} <span class="count">{available.length}</span></h3>
                 {#each available as m (m.id)}{@render modRow(m)}{:else}
@@ -779,31 +840,36 @@
               </section>
             {/if}
 
-            {#if possible.length && srcFilter !== "gamebanana"}
+            {#if possible.length && view === "repo"}
               <section class="panel">
                 <h3 class="panel-head">{t("possible")} <span class="count">{possible.length}</span></h3>
                 {#each possible as m (m.id)}{@render modRow(m)}{/each}
               </section>
             {/if}
 
-            {#if srcFilter === "gamebanana" || (srcFilter === "all" && gb && gb.tid === selected.tid)}
+            {#if view === "gb"}
               <section class="panel">
-                <h3 class="panel-head">GameBanana <span class="count">{gbList.length}</span><span class="spacer"></span>
+                <h3 class="panel-head">GameBanana {#if gb?.tid === selected.tid && gb.status === "ok"}<span class="count">{gbList.length}</span>{/if}<span class="spacer"></span>
                   <span class="seg" role="group" aria-label={t("gbMode")}>
                     <button aria-pressed={!gbAll} onclick={() => setGbAll(false)}>{t("gbCurated")}</button>
                     <button aria-pressed={gbAll} onclick={() => setGbAll(true)}>{t("gbAll")}</button>
                   </span>
                 </h3>
+                <div class="warn" role="note">{@render icon(ICON.alert)}<p><strong>{t("gbWarnTitle")}</strong> {t("gbWarn")}</p></div>
                 {#if !gb || gb.tid !== selected.tid || gb.status === "loading"}
-                  <p class="muted">{gbAll ? t("gbLoadingAll") : t("gbLoading")}</p>
+                  <p class="muted loading">{@render spinner()}{gbAll ? t("gbLoadingAll") : t("gbLoading")}</p>
+                  <div class="cards" aria-hidden="true">{#each { length: 12 } as _, i (i)}<div class="card skel"></div>{/each}</div>
                 {:else if gb.status === "error"}
                   <p class="muted">{gb.error} <button class="link" onclick={() => loadGb(selected!)}>{t("retry")}</button></p>
                 {:else if gb.status === "notfound"}
                   <p class="muted">{t("gbNotFound")} <button class="link" onclick={() => openUrl(`https://gamebanana.com/search?_sSearchString=${encodeURIComponent(selected!.name ?? "")}`)}>{t("gbSearchSite")}</button></p>
                 {:else}
-                  {#each gbList.slice(0, gbShown) as m (m.id)}{@render modRow(m)}{:else}
+                  <div class="cards">
+                    {#each gbList.slice(0, gbShown) as m (m.id)}{@render gbCard(m)}{/each}
+                  </div>
+                  {#if !gbList.length}
                     <p class="muted">{q ? t("nothingMatches") : gbAll ? t("gbEmptyAll") : t("gbEmptyCurated")}</p>
-                  {/each}
+                  {/if}
                   {#if gbList.length > gbShown}
                     <button class="ghost more" onclick={() => (gbShown += 50)}>{t("showMore", { n: gbList.length - gbShown })}</button>
                   {/if}
@@ -811,7 +877,7 @@
               </section>
             {/if}
 
-            {#if q && searchHits.length}
+            {#if view === "repo" && q && searchHits.length}
               <section class="panel">
                 <h3 class="panel-head">{t("searchAll")} <span class="count">{searchHits.length}</span></h3>
                 {#each searchResults as m (m.id)}{@render modRow(m)}{/each}
@@ -860,6 +926,42 @@
           disabled={!prepared.roots.some((r) => checked[r.key])}
           onclick={() => commit(prepared!.token, prepared!.roots.filter((r) => checked[r.key]).map((r) => r.key))}
         >{t("installSelected")}</button>
+      </div>
+    {/if}
+  </dialog>
+
+  <dialog bind:this={gbDlg} class="modal gbmod" aria-labelledby="gbm-title" tabindex="-1" onclose={() => (gbOpen = null)}>
+    {#if gbOpen}
+      {@const m = gbOpen}
+      {@const img = gbDetail?.image ?? m.thumb}
+      <div class="gbm-img">{#if img}<img src={img} alt="" />{/if}</div>
+      <h3 id="gbm-title">{m.name}</h3>
+      <div class="gbm-stats">
+        {#if gbDetail?.submitter}<span>{t("gbBy", { name: gbDetail.submitter })}</span>{/if}
+        {#if gbDetail?.version}<span>v{gbDetail.version}</span>{/if}
+        <span title={t("gbViews")}>👁 {compact(m.views)}</span>
+        <span>{compact(m.likes)} ♥</span>
+        {#if gbDetail}
+          <span>⬇ {compact(gbDetail.downloads)}</span>
+          {#if gbDetail.size}<span>{fmtSize(gbDetail.size)}</span>{/if}
+          {#if gbDetail.updated}<span>{t("gbUpdated", { date: new Date(gbDetail.updated * 1000).toLocaleDateString(locale()) })}</span>{/if}
+        {/if}
+      </div>
+      <div class="gbm-text">
+        {#if gbDetailErr}
+          <p class="muted">{gbDetailErr} <button class="link" onclick={() => openGb(m)}>{t("retry")}</button></p>
+        {:else if !gbDetail}
+          <p class="muted loading">{@render spinner()}{t("gbDetailLoading")}</p>
+        {:else}
+          <p>{plain(gbDetail.text) || t("gbNoText")}</p>
+        {/if}
+      </div>
+      <p class="gbm-warn">{@render icon(ICON.alert)}{t("gbWarnShort")}</p>
+      <div class="actions">
+        <button class="ghost" onclick={() => openUrl(githubUrl(m))}>{t("viewGb")}</button>
+        <span class="spacer"></span>
+        <button class="ghost" onclick={() => gbDlg?.close()}>{t("setClose")}</button>
+        <button class="primary" disabled={busy} onclick={() => { gbDlg?.close(); install(m); }}>{t("install")}</button>
       </div>
     {/if}
   </dialog>
@@ -1012,6 +1114,9 @@
   .rail-btn[aria-current="page"] { background: var(--sel); color: var(--fg); }
   .rail-btn.spin :global(.icon) { animation: rot 1s linear infinite; }
   @keyframes rot { to { transform: rotate(360deg); } }
+  .spinner { display: inline-block; flex-shrink: 0; width: 12px; height: 12px; box-sizing: border-box; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: rot 0.8s linear infinite; vertical-align: -2px; }
+  .card-btn .spinner { margin-right: 6px; }
+  .loading { display: flex; align-items: center; gap: 8px; }
   .content { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
   .topbar { display: flex; align-items: center; gap: 14px; height: 52px; padding: 0 20px; box-sizing: border-box; border-bottom: 1px solid var(--border); flex-shrink: 0; }
   h1 { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
@@ -1085,6 +1190,39 @@
   .head img.cover { width: 56px; height: 56px; border-radius: 10px; flex-shrink: 0; }
   .thumb { width: 48px; height: 30px; border-radius: 4px; object-fit: cover; flex-shrink: 0; background: var(--badge); }
   .more { display: block; margin: 8px auto 12px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 14px; padding: 14px; }
+  /* altura fixa: capa 16:9, nome sempre em 2 linhas (reticências se longo), meta e botão de uma linha */
+  .card { position: relative; display: flex; flex-direction: column; background: var(--ghost); border-radius: 10px; overflow: hidden; transition: background-color 0.15s, transform 0.15s, box-shadow 0.15s; }
+  .card:hover { background: var(--ghost-hover); transform: translateY(-2px); box-shadow: var(--shadow); }
+  .card.working { outline: 2px solid var(--accent); }
+  .card-main { display: flex; flex-direction: column; align-items: stretch; width: 100%; padding: 0; gap: 0; text-align: left; background: transparent; border-radius: 0; font-weight: normal; }
+  .card-main:hover:not(:disabled) { background: transparent; }
+  .card-main:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+  .card-img { position: relative; display: block; aspect-ratio: 16 / 9; overflow: hidden; background: var(--badge); }
+  .card-img img { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform 0.25s; }
+  .card:hover .card-img img { transform: scale(1.04); }
+  .card-flag { position: absolute; top: 6px; left: 6px; display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 10px; background: var(--ok-bg); color: var(--ok); backdrop-filter: blur(6px); font-size: 11px; font-weight: 600; }
+  .card-flag :global(.icon) { width: 12px; height: 12px; }
+  .card-bar { position: absolute; left: 0; right: 0; bottom: 0; height: 4px; background: rgb(0 0 0 / 0.4); }
+  .card-fill { display: block; height: 100%; background: var(--accent); transition: width 0.2s; }
+  .card-fill.indet { width: 100%; opacity: 0.6; animation: pulse 1s ease-in-out infinite; }
+  .card-name { display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; white-space: normal; box-sizing: content-box; height: 2.6em; margin: 8px 10px 0; font-weight: 500; line-height: 1.3; }
+  .card-meta { display: flex; justify-content: space-between; gap: 8px; margin: 4px 10px 8px; color: var(--muted); font-size: 12px; line-height: 18px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .card-btn { margin: auto 10px 10px; }
+  .card.skel { height: 238px; animation: pulse 1.2s ease-in-out infinite; pointer-events: none; }
+  @keyframes pulse { 50% { opacity: 0.45; } }
+  .gbmod { width: min(640px, 92vw); }
+  .gbm-img { flex-shrink: 0; aspect-ratio: 16 / 9; max-height: 320px; margin: -6px -8px 12px; border-radius: 10px; overflow: hidden; background: var(--badge); }
+  .gbm-img img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .gbm-stats { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 2px 0 10px; color: var(--muted); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+  .gbm-text { flex: 1; min-height: 3em; max-height: 9.5em; overflow-y: auto; margin-bottom: 14px; }
+  .gbm-text p { margin: 0; white-space: pre-line; overflow-wrap: anywhere; line-height: 1.45; }
+  .tabs button { display: inline-flex; align-items: center; gap: 6px; padding: 5px 14px; font-size: 13px; }
+  .tabs .count { min-width: 0; }
+  .warn { display: flex; gap: 10px; align-items: flex-start; margin: 14px 14px 0; padding: 10px 12px; border-radius: 10px; background: rgb(245 166 35 / 0.12); border: 1px solid rgb(245 166 35 / 0.45); font-size: 13px; line-height: 1.45; }
+  .warn p { margin: 0; }
+  .warn :global(.icon), .gbm-warn :global(.icon) { flex-shrink: 0; width: 16px; height: 16px; margin-top: 1px; color: #e09a1a; }
+  .gbm-warn { display: flex; gap: 8px; align-items: flex-start; margin: 0 0 12px; font-size: 12px; line-height: 1.4; color: var(--muted); }
   .panel-head .seg button { padding: 2px 10px; }
   .info { flex: 1; min-width: 0; }
   .name, .sub { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1132,8 +1270,10 @@
   .nsz .act { min-width: 108px; justify-content: center; background: transparent; color: var(--fg); border: 1px solid var(--border); }
   .nsz .act:hover:not(:disabled) { background: var(--ghost); }
 
-  .toasts { position: fixed; right: 20px; bottom: 20px; z-index: 10; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; width: min(440px, calc(100vw - 40px)); pointer-events: none; }
+  .toasts { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); z-index: 10; display: flex; flex-direction: column; align-items: center; gap: 8px; width: min(440px, calc(100vw - 40px)); pointer-events: none; }
   .toasts > * { pointer-events: auto; width: 100%; }
+  .card.failed { outline: 2px solid var(--danger); }
+  .card-flag.bad { background: var(--danger-bg); color: var(--danger); }
   .toast { display: flex; align-items: center; gap: 10px; box-sizing: border-box; width: 100%; padding: 10px 12px 10px 16px; border-radius: 12px; background: var(--toast); color: var(--fg); border: 1px solid var(--border); box-shadow: var(--shadow); backdrop-filter: blur(16px); }
   .toast { transition: opacity 0.16s ease, transform 0.16s ease; }
   @starting-style { .toast { opacity: 0; transform: translateY(8px); } }
@@ -1189,5 +1329,5 @@
     .game.sel, .rail-btn[aria-current="page"], .seg button[aria-pressed="true"] { outline: 2px solid Highlight; }
     .fill { background: Highlight; }
   }
-  @media (prefers-reduced-motion: reduce) { .fill.indet { animation: none; width: 100%; opacity: 0.5; } .rail-btn.spin :global(.icon), .sub.run :global(.icon) { animation: none; } .chev, button, .row, .modal, .menu, .toast { transition: none; } button:active { transform: none; } }
+  @media (prefers-reduced-motion: reduce) { .fill.indet, .card-fill.indet, .card.skel, .spinner { animation: none; } .fill.indet { width: 100%; opacity: 0.5; } .rail-btn.spin :global(.icon), .sub.run :global(.icon) { animation: none; } .chev, button, .row, .modal, .menu, .toast, .card, .card-img img, .card-fill { transition: none; } .card:hover { transform: none; } .card:hover .card-img img { transform: none; } button:active { transform: none; } }
 </style>

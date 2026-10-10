@@ -182,6 +182,11 @@ async fn gamebanana_mods(state: State<'_, CatalogState>, tid: String, name: Stri
 }
 
 #[tauri::command]
+async fn gamebanana_detail(id: u64) -> Result<gamebanana::GbDetail, String> {
+    gamebanana::detail(id).await
+}
+
+#[tauri::command]
 fn list_games(app: AppHandle, state: State<'_, CatalogState>) -> Result<Vec<emu::Game>, String> {
     let emu = resolve_emu(&app)?;
     let names = state.0.lock().as_ref().map(|c| c.names.clone()).unwrap_or_default();
@@ -252,6 +257,7 @@ pub fn run() {
             set_emu_dir,
             get_catalog,
             gamebanana_mods,
+            gamebanana_detail,
             list_games,
             game_cover,
             open_mod_folder,
