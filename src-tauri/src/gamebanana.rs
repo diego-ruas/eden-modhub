@@ -279,19 +279,26 @@ struct File {
     added: u64,
 }
 
-/// URL e extensão do arquivo mais recente do mod que o instalador sabe extrair.
-pub async fn download_url(mod_id: &str) -> Result<(String, String), String> {
-    let f: Files = get(&format!("Mod/{mod_id}"), &[("_csvProperties", "_aFiles".into())]).await?;
-    f.files
+fn select_download(files: Vec<File>) -> Option<(String, String)> {
+    files
         .into_iter()
         .filter_map(|f| {
             let ext = f.name.rsplit_once('.')?.1.to_lowercase();
-            matches!(ext.as_str(), "zip" | "7z" | "rar").then_some((f.added, f.url, ext))
+            let unsupported = f.name.to_ascii_lowercase().ends_with("_tkcl.zip");
+            (!unsupported && matches!(ext.as_str(), "zip" | "7z" | "rar"))
+                .then_some((f.added, f.url, ext))
         })
         .max_by_key(|(added, ..)| *added)
         .map(|(_, url, ext)| (url, ext))
-        .ok_or_else(|| "Nenhum arquivo zip/7z/rar neste mod do GameBanana".into())
 }
+
+/// URL e extensão do arquivo instalável mais recente do mod.
+pub async fn download_url(mod_id: &str) -> Result<(String, String), String> {
+    let f: Files = get(&format!("Mod/{mod_id}"), &[("_csvProperties", "_aFiles".into())]).await?;
+    select_download(f.files)
+        .ok_or_else(|| "Nenhum pacote compatível neste mod do GameBanana".into())
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -313,6 +320,45 @@ mod tests {
         // tamanho maior tem preferência quando existe
         let m = serde_json::json!({"_aImages": [{"_sBaseUrl": "https://x", "_sFile100": "s.jpg", "_sFile530": "b.jpg"}]});
         assert_eq!(image(&m, &keys), Some("https://x/b.jpg".into()));
+    }
+
+    #[test]
+    fn selects_layeredfs_archive_instead_of_tkmm_container() {
+        let files: Files = serde_json::from_str(
+            r#"{"_aFiles":[
+                {"_sFile":"tkmm_version_-_infinite_rocket_shield_tkcl.zip","_sDownloadUrl":"https://gamebanana.com/dl/1584175","_tsDateAdded":1766241688,"_sDescription":"Use this for TKMM - includes both versions of the mod"},
+                {"_sFile":"infinite_rocket_shield_efe82.7z","_sDownloadUrl":"https://gamebanana.com/dl/1581292","_tsDateAdded":1765825170,"_sDescription":"Infinite rocket all the time"}
+            ]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            select_download(files.files),
+            Some(("https://gamebanana.com/dl/1581292".into(), "7z".into()))
+        );
+    }
+
+    #[test]
+    fn rejects_tkmm_container_without_installable_alternative() {
+        let files: Files = serde_json::from_str(
+            r#"{"_aFiles":[{"_sFile":"tkmm_version_-_infinite_rocket_shield_tkcl.zip","_sDownloadUrl":"https://gamebanana.com/dl/1584175","_tsDateAdded":1766241688,"_sDescription":"Use this for TKMM"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(select_download(files.files), None);
+    }
+
+    #[test]
+    fn keeps_layeredfs_archive_with_tkmm_description() {
+        let files: Files = serde_json::from_str(
+            r#"{"_aFiles":[
+                {"_sFile":"layeredfs_compatible.zip","_sDownloadUrl":"https://gamebanana.com/dl/1584000","_tsDateAdded":1766241688,"_sDescription":"Not for TKMM; use LayeredFS"},
+                {"_sFile":"older_layeredfs.7z","_sDownloadUrl":"https://gamebanana.com/dl/1583999","_tsDateAdded":1766241600,"_sDescription":"LayeredFS package"}
+            ]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            select_download(files.files),
+            Some(("https://gamebanana.com/dl/1584000".into(), "zip".into()))
+        );
     }
 
     /// Zelda TotK: curados vêm com id, e o mod mais curtido resolve um download.
@@ -338,4 +384,5 @@ mod tests {
             assert!(url.starts_with("https://gamebanana.com/dl/"));
         });
     }
+
 }

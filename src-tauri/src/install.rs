@@ -10,6 +10,8 @@ use walkdir::WalkDir;
 
 const TMP_PREFIX: &str = ".eden-mod-manager-tmp-";
 const SMASH_TID: &str = "01006A800016E000";
+const MK8D_TID: &str = "0100152000022000";
+const MK8D_RAW_DIRS: [&str; 5] = ["Audio", "Course", "Driver", "Kart", "UI"];
 const DISABLED_DIR: &str = ".eden-mod-manager-disabled";
 pub(crate) const ARC_DIRS: &[&str] = &["fighter", "sound", "ui", "stream", "stream;", "stage", "effect", "camera", "assist", "item", "prebuilt;", "common"];
 
@@ -245,6 +247,7 @@ fn roots_from_extracted(dir: &Path, fallback: &str, tid: &str) -> Result<Vec<Roo
         }).collect();
     let mut arc_roots = std::collections::BTreeSet::new();
     let mut wrapped_roots = std::collections::BTreeSet::new();
+    let mut has_mod_root = false;
     for (_, rel) in &files {
         let segs: Vec<_> = rel.split('/').collect();
         if let Some(i) = segs.windows(2).position(|s| s == ["ultimate", "mods"]) {
@@ -253,16 +256,22 @@ fn roots_from_extracted(dir: &Path, fallback: &str, tid: &str) -> Result<Vec<Roo
                 wrapped_roots.insert(root.clone());
                 arc_roots.insert(root);
             }
-        } else if catalog::mod_root(rel).is_none() {
-            if let Some(i) = segs[..segs.len().saturating_sub(1)].iter()
-                .position(|s| ARC_DIRS.contains(s)) {
-                arc_roots.insert(segs[..i].join("/"));
+        } else {
+            let mod_root = catalog::mod_root(rel);
+            has_mod_root |= mod_root.is_some();
+            if mod_root.is_none() {
+                if let Some(i) = segs[..segs.len().saturating_sub(1)].iter()
+                    .position(|s| ARC_DIRS.contains(s)) {
+                    arc_roots.insert(segs[..i].join("/"));
+                }
             }
         }
     }
     // Um diretório de conteúdo dentro de outro mod não inicia uma segunda variante.
     arc_roots = arc_roots.iter().filter(|root| wrapped_roots.contains(*root) || !arc_roots.iter().any(|parent|
         parent != *root && (parent.is_empty() || root.starts_with(&format!("{parent}/"))))).cloned().collect();
+    // O MK8D recebe `Audio/`, `Course/`, `Driver/`, `Kart/` e `UI/` sem a pasta `romfs/`.
+    let raw_mk8d = tid.eq_ignore_ascii_case(MK8D_TID) && !has_mod_root && wrapped_roots.is_empty();
     let smash = tid.eq_ignore_ascii_case(SMASH_TID);
     let mut groups: BTreeMap<(String, bool), Vec<(PathBuf, String)>> = BTreeMap::new();
     for (path, rel) in files {
@@ -281,6 +290,10 @@ fn roots_from_extracted(dir: &Path, fallback: &str, tid: &str) -> Result<Vec<Roo
         }
         if let Some((root, dest)) = ordinary {
             groups.entry((root, false)).or_default().push((path, dest));
+        } else if raw_mk8d
+            && rel.split_once('/').is_some_and(|(root, _)| MK8D_RAW_DIRS.iter().any(|d| root.eq_ignore_ascii_case(d)))
+        {
+            groups.entry((String::new(), false)).or_default().push((path, format!("romfs/{rel}")));
         }
     }
     if !wrapped_roots.is_empty() && !smash {
@@ -298,7 +311,7 @@ async fn do_prepare(app: &AppHandle, m: &catalog::ModEntry, tmp: &Path, tid: &st
         ModKind::Files => {
             let mut files = Vec::new();
             for f in &m.files {
-                let dest = tmp.join(&f.dest);
+                let dest = checked_path(tmp, &f.dest)?;
                 download(&url(&f.src), &dest, app).await?;
                 files.push((dest, f.dest.clone()));
             }
@@ -991,6 +1004,45 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    #[test]
+    fn mario_kart_8_deluxe_raw_files_are_installed_under_romfs() {
+        let dir = test_dir("mk8d-raw-romfs");
+        for file in [
+            "Audio/Driver/Driver_Ludwig.bars",
+            "Driver/Ludwig.szs",
+            "Kart/BodyTex/BodyB_Std_Ldw_Alb.szs",
+            "Course/CourseModel.szs",
+            "UI/cmn/tc_Chara_Ludwig.png",
+            "readme.txt",
+        ] {
+            write_file(&dir, file);
+        }
+
+        let roots = roots_from_extracted(&dir, "Peter Griffin", "0100152000022000").unwrap();
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0].name, "Peter Griffin");
+        assert_eq!(roots[0].destination, Destination::Emulator);
+        let mut destinations: Vec<_> = roots[0].files.iter().map(|(_, dest)| dest.as_str()).collect();
+        destinations.sort_unstable();
+        assert_eq!(destinations, vec![
+            "romfs/Audio/Driver/Driver_Ludwig.bars",
+            "romfs/Course/CourseModel.szs",
+            "romfs/Driver/Ludwig.szs",
+            "romfs/Kart/BodyTex/BodyB_Std_Ldw_Alb.szs",
+            "romfs/UI/cmn/tc_Chara_Ludwig.png",
+        ]);
+        assert!(roots_from_extracted(&dir, "Peter Griffin", "0100000000000000").unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn mk8d_unrecognized_nested_files_are_not_treated_as_romfs() {
+        let dir = test_dir("mk8d-unrecognized");
+        write_file(&dir, "docs/readme.txt");
+        assert!(roots_from_extracted(&dir, "package", "0100152000022000").unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[cfg(any(unix, windows))]
     #[test]
     fn configured_link_root_is_allowed_but_linked_mod_paths_are_rejected() {
@@ -1066,7 +1118,7 @@ mod tests {
 
     #[test]
     fn unsafe_path_rejects_traversal_and_absolute() {
-        for p in ["../x", "a/../../x", "/x"] {
+        for p in ["../x", "a/../../x", "/x", r"romfs\safe\..\..\..\outside.bin"] {
             assert!(unsafe_path(Path::new(p)), "{p}");
         }
         assert!(!unsafe_path(Path::new("romfs/a/b.bin")));
@@ -1348,6 +1400,40 @@ mod tests {
         });
         let _ = std::fs::remove_dir_all(&dir);
         assert!(found, "nenhum dos primeiros curados virou roots");
+    }
+
+    /// O arquivo TKMM mais novo não pode substituir o pacote LayeredFS instalável.
+    #[test]
+    #[ignore]
+    fn gamebanana_tkmm_upload_uses_installable_archive() {
+        let dir = test_dir("gb-tkmm");
+        let result = tauri::async_runtime::block_on(async {
+            let (url, ext) = crate::gamebanana::download_url("557157").await?;
+            let response = catalog::HTTP
+                .get(&url)
+                .header("User-Agent", UA)
+                .send()
+                .await
+                .map_err(|e| e.to_string())?;
+            if !response.status().is_success() {
+                return Err(format!("HTTP {} for {url}", response.status()));
+            }
+            let archive = dir.join(format!("mod.{ext}"));
+            let bytes = response.bytes().await.map_err(|e| e.to_string())?;
+            std::fs::write(&archive, bytes).map_err(|e| e.to_string())?;
+            let out = dir.join("out");
+            extract(&archive, &out)?;
+            let roots = roots_from_extracted(&out, "Infinite Rocket Shield", "0100F2C0115B6000")?;
+            let installable = roots.iter().any(|r| {
+                r.destination == Destination::Emulator
+                    && r.files.iter().any(|(_, d)| d.starts_with("romfs/") || d.starts_with("exefs/"))
+            });
+            Ok::<_, String>((ext, installable))
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+        let (ext, installable) = result.unwrap();
+        assert_eq!(ext, "7z");
+        assert!(installable, "archive did not produce a LayeredFS root");
     }
 
     /// Extrai a tradução de um jogo pequeno do pacote PT-BR, de ponta a ponta até `roots_from_extracted`.
