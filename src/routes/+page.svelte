@@ -880,8 +880,10 @@
               {#if selected.icon}<img class="cover" src={selected.icon} alt="" />{/if}
               <div class="head-title">
                 <h2>{selected.name ?? selected.tid}</h2>
-                {#if selected.updateFile}
+                {#if selected.updateFile && selected.updateRegistered}
                   <span class="sub-update">{@render icon(ICON.check)}{t("updatePackageFound")}</span>
+                {:else if selected.updateFile}
+                  <span class="sub-update warn" title={t("updatePackageUnregisteredTip")}>{@render icon(ICON.alert)}{t("updatePackageUnregistered")}</span>
                 {/if}
               </div>
               <span class="spacer"></span>
@@ -1318,6 +1320,7 @@
   .head-title h2 { margin: 0; }
   .sub-update { font-size: 12px; color: #34d399; display: flex; align-items: center; gap: 4px; }
   .sub-update :global(.icon) { width: 13px; height: 13px; }
+  .sub-update.warn { color: #e09a1a; }
   .nsz-alert { margin: 14px 0 0; align-items: center; }
   .nsz-alert-text { flex: 1; min-width: 0; }
   .nsz-alert button { flex-shrink: 0; }

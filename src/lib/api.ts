@@ -46,6 +46,7 @@ export type Game = {
   icon: string | null;
   isCompressed: boolean;
   updateFile: string | null;
+  updateRegistered: boolean;
 };
 export type RootInfo = { key: string; name: string; fileCount: number };
 export type Prepared = { token: string; roots: RootInfo[] };

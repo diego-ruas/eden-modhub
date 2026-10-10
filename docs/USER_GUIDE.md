@@ -23,7 +23,7 @@ This guide covers setup, mod installation, supported archive layouts and common 
 
 The app reads the game list from the selected emulator. The **Play** button starts a game in that emulator.
 
-The app can ask you to select the emulator executable or game file if it cannot find one. It finds `.nsp` and `.xci` files by the title ID in the file name. Decompress `.nsz` and `.xcz` files with the NSZ tool before you use **Play**.
+The app can ask you to select the emulator executable or game file if it cannot find one. It finds `.nsp` and `.xci` files by the title ID in the file name. Only base games are listed in the sidebar (standalone updates and DLCs are excluded). If a game is compressed (`.nsz`/`.xcz`), the app shows an **NSZ** badge and a banner suggesting decompression with a direct shortcut to the NSZ tab. Game updates (`.nsp`) in your game folders are automatically detected and registered in the emulator configuration.
 
 The macOS build is not notarized. Allow it in System Settings on first launch.
 
