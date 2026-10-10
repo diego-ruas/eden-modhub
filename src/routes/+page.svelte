@@ -176,8 +176,9 @@
     canVerify = await api.nszCanVerify().catch(() => true);
   }
 
-  async function showNsz() {
+  async function showNsz(filter?: string) {
     tab = "nsz";
+    if (filter) romFilter = filter;
     await loadRoms();
   }
 
@@ -706,7 +707,7 @@
       <button role="menuitem" popovertarget="app-menu" popovertargetaction="hide" disabled={busy} onclick={checkUpdate}>{@render icon(ICON.update)}{t("updCheck")}</button>
     </div>
     <button class="rail-btn" title={t("tabMods")} aria-label={t("tabMods")} aria-current={tab === "mods" ? "page" : undefined} onclick={() => (tab = "mods")}>{@render icon(ICON.mods)}</button>
-    <button class="rail-btn" title={t("tabNsz")} aria-label={t("tabNsz")} aria-current={tab === "nsz" ? "page" : undefined} disabled={!emuDir} onclick={showNsz}>{@render icon(ICON.nsz)}</button>
+    <button class="rail-btn" title={t("tabNsz")} aria-label={t("tabNsz")} aria-current={tab === "nsz" ? "page" : undefined} disabled={!emuDir} onclick={() => showNsz()}>{@render icon(ICON.nsz)}</button>
     <span class="spacer"></span>
     <button class="rail-btn" class:spin={loadingCatalog} title={loadingCatalog ? t("refreshing") : t("refreshCatalog")} aria-label={t("refreshCatalog")} disabled={busy || !emuDir} aria-busy={loadingCatalog} onclick={() => loadCatalog(true)}>{@render icon(ICON.refresh)}</button>
   </nav>
@@ -829,7 +830,7 @@
                 <span class="avatar" aria-hidden="true">{#if g.icon}<img src={g.icon} alt="" />{:else}{initials(g.name ?? g.tid)}{/if}</span>
                 <span class="info">
                   <span class="name" title={g.name ?? g.tid}>{g.name ?? g.tid}</span>
-                  <span class="sub"><span title={t("tidTitle")}>{g.tid}</span>{#if g.version}<span class="badge">{g.version}</span>{/if}</span>
+                  <span class="sub"><span title={t("tidTitle")}>{g.tid}</span>{#if g.isCompressed}<span class="badge warn" title={t("nszCompressedTitle")}>NSZ</span>{/if}{#if g.version}<span class="badge">{g.version}</span>{/if}</span>
                 </span>
               </button>
             {:else}
@@ -877,10 +878,25 @@
           {:else}
             <div class="head">
               {#if selected.icon}<img class="cover" src={selected.icon} alt="" />{/if}
-              <h2>{selected.name ?? selected.tid}</h2>
+              <div class="head-title">
+                <h2>{selected.name ?? selected.tid}</h2>
+                {#if selected.updateFile}
+                  <span class="sub-update">{@render icon(ICON.check)}{t("updatePackageFound")}</span>
+                {/if}
+              </div>
               <span class="spacer"></span>
               <button class="primary" disabled={busy} onclick={launchGame}>{@render icon(ICON.play)}{t("play")}</button>
             </div>
+
+            {#if selected.isCompressed}
+              <div class="warn nsz-alert" role="note">
+                {@render icon(ICON.nsz)}
+                <div class="nsz-alert-text">
+                  <p><strong>{t("nszCompressedTitle")}</strong> — {t("nszCompressedDesc")}</p>
+                </div>
+                <button onclick={() => showNsz(selected?.name ?? selected?.tid)}>{@render icon(ICON.nsz)}{t("decompressInNsz")}</button>
+              </div>
+            {/if}
 
             <section class="panel">
               <h3 class="panel-head">{t("installed")} <span class="count">{installed.length}</span><span class="spacer"></span><button class="icon-btn" disabled={busy} aria-label={t("addLocal")} title={t("addLocal")} onclick={installLocal}>{@render icon(ICON.plus)}</button><button class="icon-btn" aria-label={t("openModFolder")} title={t("openModFolder")} onclick={() => api.openModFolder(selected!.tid)}>{@render icon(ICON.folder)}</button></h3>
@@ -1298,6 +1314,13 @@
   .game .avatar, .group .avatar { width: 36px; height: 36px; }
   .head { display: flex; align-items: center; gap: 14px; }
   .head img.cover { width: 56px; height: 56px; border-radius: 10px; flex-shrink: 0; }
+  .head-title { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .head-title h2 { margin: 0; }
+  .sub-update { font-size: 12px; color: #34d399; display: flex; align-items: center; gap: 4px; }
+  .sub-update :global(.icon) { width: 13px; height: 13px; }
+  .nsz-alert { margin: 14px 0 0; align-items: center; }
+  .nsz-alert-text { flex: 1; min-width: 0; }
+  .nsz-alert button { flex-shrink: 0; }
   .thumb { width: 48px; height: 30px; border-radius: 4px; object-fit: cover; flex-shrink: 0; background: var(--badge); }
   .more { display: block; margin: 8px auto 12px; }
   .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 14px; padding: 14px; }
@@ -1353,6 +1376,7 @@
   .badge :global(.icon) { width: 11px; height: 11px; vertical-align: -1px; margin-right: 3px; }
   .badge.ok { background: var(--badge-ok); color: var(--fg); }
   .badge.tag { margin: 0 8px 0 0; font-size: 11px; }
+  .badge.warn { background: rgb(245 166 35 / 0.18); color: #e09a1a; font-weight: 600; }
   .size { color: var(--muted); font-size: 12px; min-width: 60px; text-align: right; font-variant-numeric: tabular-nums; }
   .empty { margin: 12vh auto 0; max-width: 460px; display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 28px; text-align: center; text-wrap: balance; }
 

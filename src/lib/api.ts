@@ -39,7 +39,14 @@ export type Catalog = {
   mods: ModEntry[];
   names: Record<string, string>;
 };
-export type Game = { tid: string; name: string | null; version: string | null; icon: string | null };
+export type Game = {
+  tid: string;
+  name: string | null;
+  version: string | null;
+  icon: string | null;
+  isCompressed: boolean;
+  updateFile: string | null;
+};
 export type RootInfo = { key: string; name: string; fileCount: number };
 export type Prepared = { token: string; roots: RootInfo[] };
 export type Installed = {
@@ -119,4 +126,5 @@ export const api = {
     invoke<NszResult>("nsz_run", { op, path, deleteSource }),
   nszCanVerify: () => invoke<boolean>("nsz_can_verify"),
   peekArchive: (modId: string) => invoke<RootInfo[]>("peek_archive", { modId }),
+  registerGameUpdate: (tid: string) => invoke<string | null>("register_game_update", { tid }),
 };
