@@ -58,6 +58,9 @@ A file named `portable` next to the exe makes `portable_dir()` return the exe fo
 - Signing key lives outside the repo: `~/.tauri/eden-modhub.key`, `.key.pub`, `.key.password`. Secrets `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` are set in GitHub. **Losing the key means installed apps can never update again.** Never commit it, never regenerate it.
 - Do not put `createUpdaterArtifacts` in `tauri.conf.json`: it would force a private key on every local build.
 - A release is created by pushing a tag `v*` (version must match `package.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`). `tauri-action` builds the three platforms, uploads bundles and `latest.json`; a Windows step signs and attaches the portable zip. Pushes to `main` do not release.
+- `.github/workflows/build.yml` generates GitHub release notes for each `v*` tag. `.github/release.yml` groups merged PRs by label.
+- Apply `breaking-change`, `feature`, `enhancement`, `performance`, `bug`, `fix`, `documentation`, `dependencies`, `maintenance`, or `chore` labels before tagging. Unmatched PRs go under `Other Changes`.
+- `skip-changelog` excludes a PR; Dependabot PRs are excluded.
 - The updater reads `releases/latest/download/latest.json`, so deleting or breaking the latest release breaks updates for everyone.
 - Bump all three version files together, then `npm install --package-lock-only` and `cargo check`.
 
