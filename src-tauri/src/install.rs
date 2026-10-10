@@ -21,6 +21,7 @@ pub enum Destination {
     #[default]
     Emulator,
     Arcropolis,
+    Save,
 }
 
 pub struct Root {
@@ -47,6 +48,7 @@ pub struct RootInfo {
     key: String,
     name: String,
     file_count: usize,
+    destination: Destination,
 }
 
 #[derive(Serialize)]
@@ -54,6 +56,7 @@ pub struct RootInfo {
 pub struct Prepared {
     token: String,
     roots: Vec<RootInfo>,
+    is_save: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -238,6 +241,135 @@ fn stem(p: &str) -> String {
     f.rsplit_once('.').map(|(s, _)| s).unwrap_or(f).to_string()
 }
 
+fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in WalkDir::new(src).into_iter().filter_map(Result::ok) {
+        let rel = match entry.path().strip_prefix(src) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        let target = dst.join(rel);
+        if entry.file_type().is_dir() {
+            std::fs::create_dir_all(&target)?;
+        } else if entry.file_type().is_file() {
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
+}
+
+fn detect_save_files(dir: &Path, tid: &str) -> Option<Vec<(PathBuf, String)>> {
+    let files: Vec<_> = WalkDir::new(dir)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|e| e.file_type().is_file())
+        .map(|e| {
+            let rel = e.path().strip_prefix(dir).unwrap().to_string_lossy().replace('\\', "/");
+            (e.path().to_path_buf(), rel)
+        })
+        .collect();
+
+    if files.is_empty() {
+        return None;
+    }
+
+    for (_, rel) in &files {
+        let low = rel.to_lowercase();
+        if low.split('/').any(|s| matches!(s, "romfs" | "exefs" | "cheats" | "romfslite" | "romfs_ext"))
+            || low.contains("ultimate/mods")
+        {
+            return None;
+        }
+    }
+
+    let is_smash = tid.eq_ignore_ascii_case(SMASH_TID);
+    let mut is_save = false;
+
+    for (_, rel) in &files {
+        let low = rel.to_lowercase();
+        let file_name = low.rsplit('/').next().unwrap_or(&low);
+        if file_name == "system_data.bin"
+            || file_name == "userdata.dat"
+            || file_name == "savedata.bin"
+            || file_name == "savedata"
+            || file_name == "save.dat"
+            || file_name == "game_data.sav"
+            || file_name == "progress.sav"
+            || file_name.ends_with(".sav")
+            || file_name == "main"
+            || file_name == "backup"
+            || low.contains("save_data/")
+            || low.contains("savedata/")
+        {
+            is_save = true;
+            break;
+        }
+    }
+
+    if !is_save {
+        return None;
+    }
+
+    let mut out = Vec::new();
+    let tid_upper = tid.to_ascii_uppercase();
+    let tid_lower = tid.to_ascii_lowercase();
+
+    for (path, rel) in files {
+        if unsafe_path(Path::new(&rel)) {
+            continue;
+        }
+        let dest = if is_smash {
+            if let Some(i) = rel.find("save_data/") {
+                rel[i..].to_string()
+            } else if let Some(stripped) = rel.strip_prefix(&format!("{tid_upper}/"))
+                .or_else(|| rel.strip_prefix(&format!("{tid_lower}/")))
+            {
+                if stripped.starts_with("save_data/") {
+                    stripped.to_string()
+                } else {
+                    format!("save_data/{stripped}")
+                }
+            } else {
+                let segs: Vec<&str> = rel.split('/').collect();
+                let inner = if segs.len() > 1 && !matches!(segs[0].to_lowercase().as_str(), "mii" | "spirits" | "stage") {
+                    segs[1..].join("/")
+                } else {
+                    rel.clone()
+                };
+                if inner.starts_with("save_data/") {
+                    inner
+                } else {
+                    format!("save_data/{inner}")
+                }
+            }
+        } else {
+            if let Some(stripped) = rel.strip_prefix(&format!("{tid_upper}/"))
+                .or_else(|| rel.strip_prefix(&format!("{tid_lower}/")))
+            {
+                stripped.to_string()
+            } else {
+                let segs: Vec<&str> = rel.split('/').collect();
+                if segs.len() > 1 && segs[0].to_lowercase().contains("save") {
+                    segs[1..].join("/")
+                } else {
+                    rel.clone()
+                }
+            }
+        };
+
+        out.push((path, dest));
+    }
+
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
 fn roots_from_extracted(dir: &Path, fallback: &str, tid: &str) -> Result<Vec<Root>, String> {
     let files: Vec<_> = WalkDir::new(dir).into_iter().filter_map(Result::ok)
         .filter(|e| e.file_type().is_file())
@@ -298,6 +430,16 @@ fn roots_from_extracted(dir: &Path, fallback: &str, tid: &str) -> Result<Vec<Roo
     }
     if !wrapped_roots.is_empty() && !smash {
         return Err("ARCropolis requer Super Smash Bros. Ultimate.".into());
+    }
+    if groups.is_empty() {
+        if let Some(save_files) = detect_save_files(dir, tid) {
+            return Ok(vec![Root {
+                name: format!("Save: {fallback}"),
+                key: format!("save:{fallback}"),
+                files: save_files,
+                destination: Destination::Save,
+            }]);
+        }
     }
     Ok(groups.into_iter().map(|((key, arc), files)| Root {
         name: catalog::display_name(&key, fallback), key: if arc { format!("arcropolis:{key}") } else { key }, files,
@@ -408,12 +550,18 @@ fn stage(
             return Err(e);
         }
     };
+    let is_save = roots.iter().any(|r| r.destination == Destination::Save);
     let infos = roots
         .iter()
-        .map(|r| RootInfo { key: r.key.clone(), name: r.name.clone(), file_count: r.files.len() })
+        .map(|r| RootInfo {
+            key: r.key.clone(),
+            name: r.name.clone(),
+            file_count: r.files.len(),
+            destination: r.destination,
+        })
         .collect();
     pending.0.lock().insert(token.clone(), PendingInstall { tid, mod_id, version, tmp, roots });
-    Ok(Prepared { token, roots: infos })
+    Ok(Prepared { token, roots: infos, is_save })
 }
 
 /// Mod baixado pelo usuário (zip/7z/rar): extrai e segue o mesmo fluxo de escolha de variantes e `commit`.
@@ -436,6 +584,7 @@ pub async fn prepare_local(app: AppHandle, pending: State<'_, Pending>, tid: Str
 fn destination_dir(emu: &crate::emu::Emu, tid: &str, destination: Destination, disabled: bool) -> Result<PathBuf, String> {
     crate::emu::check_tid(tid)?;
     if destination == Destination::Emulator { return Ok(emu.tid_dir(tid)); }
+    if destination == Destination::Save { return emu.save_dir(tid); }
     if !tid.eq_ignore_ascii_case(SMASH_TID) { return Err("ARCropolis requer Super Smash Bros. Ultimate.".into()); }
     if emu.kind == Kind::Yuzu { return Err("ARCropolis não é compatível com este emulador.".into()); }
     Ok(emu.sd_dir().join("ultimate").join(if disabled { DISABLED_DIR } else { "mods" }))
@@ -650,6 +799,10 @@ fn checked_path(base: &Path, relative: &str) -> Result<PathBuf, String> {
 }
 
 fn item_paths(emu: &crate::emu::Emu, item: &Installed) -> Result<(PathBuf, Option<PathBuf>), String> {
+    if item.destination == Destination::Save {
+        let save = destination_dir(emu, &item.tid, Destination::Save, false)?;
+        return Ok((save, None));
+    }
     if item.folder.contains(['/', '\\']) { return Err("Pasta não foi instalada pelo Eden Mod Manager".into()); }
     let on = checked_path(&destination_dir(emu, &item.tid, item.destination, false)?, &item.folder)?;
     let off = if item.destination == Destination::Arcropolis {
@@ -689,6 +842,39 @@ fn commit(app: &AppHandle, p: PendingInstall, keys: &[String]) -> Result<Vec<Ins
     let mut backups = Vec::new();
     let result = (|| {
         for (n, root) in selected.into_iter().enumerate() {
+            if root.destination == Destination::Save {
+                if emu.is_running() {
+                    return Err("Feche o emulador antes de instalar um save game.".into());
+                }
+                let game_dir = destination_dir(&emu, &p.tid, Destination::Save, false)?;
+                if game_dir.is_dir() {
+                    let has_files = WalkDir::new(&game_dir)
+                        .into_iter()
+                        .filter_map(Result::ok)
+                        .any(|e| e.file_type().is_file());
+                    if has_files {
+                        let backup_dir = game_dir
+                            .parent()
+                            .ok_or("Pasta pai de save inválida")?
+                            .join(format!("{}_backup_{}", p.tid.to_ascii_uppercase(), catalog::now_secs()));
+                        copy_dir_all(&game_dir, &backup_dir)
+                            .map_err(|e| format!("Falha ao criar backup do save: {e}"))?;
+                    }
+                }
+                std::fs::create_dir_all(&game_dir).map_err(|e| e.to_string())?;
+                for (src, dest) in &root.files {
+                    let to = checked_path(&game_dir, dest)?;
+                    if let Some(d) = to.parent() { std::fs::create_dir_all(d).map_err(|e| e.to_string())?; }
+                    std::fs::copy(src, &to).map_err(|e| format!("Falha ao copiar arquivo de save: {e}"))?;
+                }
+                done.push(Installed {
+                    emu: emu.kind, destination: root.destination, tid: p.tid.clone(),
+                    folder: format!("save-{}", catalog::now_secs()),
+                    mod_id: p.mod_id.clone(), root_key: root.key.clone(), name: root.name.clone(),
+                    version: p.version.clone(), installed_at: catalog::now_secs(),
+                });
+                continue;
+            }
             let reinstall = manifest.iter().position(|i| i.emu == emu.kind && i.tid == p.tid
                 && i.destination == root.destination && i.mod_id == p.mod_id && i.root_key == root.key);
             let old = reinstall.map(|pos| item_location(&emu, &manifest[pos])).transpose()?;
@@ -818,6 +1004,8 @@ pub fn list_installed(app: AppHandle, tid: String) -> Result<Vec<InstalledView>,
         .map(|item| {
             let enabled = if item.destination == Destination::Arcropolis {
                 item_location(&emu, &item).map(|(_, on)| on).unwrap_or(false)
+            } else if item.destination == Destination::Save {
+                true
             } else { !off.contains(&item.folder) };
             InstalledView { enabled, item }
         })
@@ -843,6 +1031,9 @@ pub async fn set_mod_enabled(app: AppHandle, tid: String, folder: String, enable
         .cloned()
         .ok_or("Pasta não foi instalada pelo Eden Mod Manager")?;
     item_paths(&emu, &item)?;
+    if item.destination == Destination::Save {
+        return Err("Saves de jogos não podem ser desativados".into());
+    }
     if item.destination == Destination::Arcropolis {
         if enabled { ensure_arcropolis(&app, &tid).await?; }
         toggle_arcropolis(&emu, &item, enabled)
@@ -876,14 +1067,16 @@ pub fn uninstall(app: AppHandle, tid: String, folder: String) -> Result<(), Stri
         .iter()
         .position(|i| i.emu == emu.kind && i.tid == tid && i.folder == folder)
         .ok_or("Pasta não foi instalada pelo Eden Mod Manager")?;
-    let (target, _) = item_location(&emu, &m[pos])?;
-    match std::fs::remove_dir_all(target) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(format!("Falha ao remover: {e}")),
-    }
-    if m[pos].destination == Destination::Emulator && crate::addons::disabled(&emu, &tid).contains(&folder) {
-        let _ = crate::addons::set_enabled(&emu, &tid, &folder, true);
+    if m[pos].destination != Destination::Save {
+        let (target, _) = item_location(&emu, &m[pos])?;
+        match std::fs::remove_dir_all(target) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("Falha ao remover: {e}")),
+        }
+        if m[pos].destination == Destination::Emulator && crate::addons::disabled(&emu, &tid).contains(&folder) {
+            let _ = crate::addons::set_enabled(&emu, &tid, &folder, true);
+        }
     }
     m.remove(pos);
     save_manifest(&app, &m)
@@ -1460,6 +1653,68 @@ mod tests {
         assert!(roots[0].files.iter().all(|(p, d)| d.starts_with("romfs/") && p.is_file()));
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn detect_save_files_routes_smash_system_data() {
+        let dir = test_dir("save-smash");
+        write_file(&dir, "smash_100/save_data/system_data.bin");
+        write_file(&dir, "smash_100/save_data/spirits/spirits_param.bin");
+        let roots = roots_from_extracted(&dir, "100% Save", SMASH_TID).unwrap();
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0].destination, Destination::Save);
+        assert_eq!(roots[0].name, "Save: 100% Save");
+        let dests: Vec<_> = roots[0].files.iter().map(|(_, d)| d.as_str()).collect();
+        assert!(dests.contains(&"save_data/system_data.bin"));
+        assert!(dests.contains(&"save_data/spirits/spirits_param.bin"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn detect_save_files_routes_flat_system_data() {
+        let dir = test_dir("save-flat");
+        write_file(&dir, "system_data.bin");
+        let roots = roots_from_extracted(&dir, "Save File", SMASH_TID).unwrap();
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0].destination, Destination::Save);
+        assert_eq!(roots[0].files[0].1, "save_data/system_data.bin");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn detect_save_files_routes_other_games_userdata() {
+        let dir = test_dir("save-mk8d");
+        write_file(&dir, "0100152000022000/userdata.dat");
+        let roots = roots_from_extracted(&dir, "MK8D Save", MK8D_TID).unwrap();
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0].destination, Destination::Save);
+        assert_eq!(roots[0].files[0].1, "userdata.dat");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn copy_dir_all_recursively_copies_all_files() {
+        let src = test_dir("copy-src");
+        let dst = test_dir("copy-dst");
+        write_file(&src, "sub/file1.bin");
+        write_file(&src, "file2.bin");
+        copy_dir_all(&src, &dst).unwrap();
+        assert!(dst.join("sub/file1.bin").is_file());
+        assert!(dst.join("file2.bin").is_file());
+        let _ = std::fs::remove_dir_all(&src);
+        let _ = std::fs::remove_dir_all(&dst);
+    }
+
+    #[test]
+    fn emu_save_dir_finds_profile_and_tid() {
+        let dir = test_dir("emu-save");
+        let emu = crate::emu::Emu { kind: Kind::Eden, dir: dir.clone() };
+        let user_save = dir.join("nand/user/save/0000000000000000/1234567890ABCDEF1234567890ABCDEF");
+        std::fs::create_dir_all(&user_save).unwrap();
+        std::fs::create_dir_all(dir.join("config")).unwrap();
+        let save_dir = emu.save_dir(SMASH_TID).unwrap();
+        assert_eq!(save_dir, user_save.join(SMASH_TID));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 #[derive(Default)]
@@ -1492,7 +1747,7 @@ pub async fn peek_archive(
     let _ = std::fs::remove_dir_all(&tmp);
     let infos: Vec<RootInfo> = r?
         .iter()
-        .map(|r| RootInfo { key: r.key.clone(), name: r.name.clone(), file_count: r.files.len() })
+        .map(|r| RootInfo { key: r.key.clone(), name: r.name.clone(), file_count: r.files.len(), destination: r.destination })
         .collect();
     cache.0.lock().insert(mod_id, infos.clone());
     Ok(infos)

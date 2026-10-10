@@ -37,6 +37,8 @@
   let progress = $state<{ received: number; total: number | null } | null>(null);
   let prepared = $state<Prepared | null>(null);
   let dlg = $state<HTMLDialogElement>();
+  let savePrepared = $state<Prepared | null>(null);
+  let saveDlg = $state<HTMLDialogElement>();
   let guide = $state<HTMLDialogElement>();
   let dependencies = $state<HTMLDialogElement>();
   let upd = $state<HTMLDialogElement>();
@@ -666,6 +668,11 @@
       busy = false;
       return;
     }
+    if (p.isSave) {
+      savePrepared = p;
+      openModal(saveDlg);
+      return;
+    }
     if (only !== undefined) {
       await commit(p.token, [only]);
       return;
@@ -683,7 +690,10 @@
     progress = null;
     prepared = null;
     busy = false;
-    if (r) notice = t(emu === "ryujinx" ? "installedNoticeRyu" : "installedNotice");
+    if (r) {
+      const isSave = r.some((i) => i.destination === "save");
+      notice = isSave ? t("saveInstalledNotice") : t(emu === "ryujinx" ? "installedNoticeRyu" : "installedNotice");
+    }
     else failedId = installingId;
     await refreshInstalled();
   }
@@ -692,6 +702,22 @@
     if (prepared) await run(() => api.cancelInstall(prepared!.token));
     prepared = null;
     busy = false;
+  }
+
+  async function cancelSave() {
+    if (savePrepared) await run(() => api.cancelInstall(savePrepared!.token));
+    savePrepared = null;
+    saveDlg?.close();
+    busy = false;
+  }
+
+  async function confirmSave() {
+    if (!savePrepared) return;
+    const token = savePrepared.token;
+    const key = savePrepared.roots[0]?.key;
+    saveDlg?.close();
+    if (key) await commit(token, [key]);
+    savePrepared = null;
   }
 
   async function remove(i: InstalledView) {
@@ -1044,7 +1070,11 @@
                   </div>
                   {#if up}<span class="badge" title={t("updateAvailable", { v: up.version ?? "" })}>{i.version} → {up.version}</span>
                     <button disabled={busy} onclick={() => install(up, i.rootKey)}>{t("updateMod")}</button>{/if}
-                  <button class="ghost" title={t("toggleHint")} onclick={() => toggle(i)}>{i.enabled ? t("disable") : t("enable")}</button>
+                  {#if i.destination === "save"}
+                    <span class="badge">{t("saveBadge")}</span>
+                  {:else}
+                    <button class="ghost" title={t("toggleHint")} onclick={() => toggle(i)}>{i.enabled ? t("disable") : t("enable")}</button>
+                  {/if}
                   <button class="danger" onclick={() => remove(i)}>{t("remove")}</button>
                 </div>
               {:else}
@@ -1175,6 +1205,18 @@
           disabled={!prepared.roots.some((r) => checked[r.key])}
           onclick={() => commit(prepared!.token, prepared!.roots.filter((r) => checked[r.key]).map((r) => r.key))}
         >{t("installSelected")}</button>
+      </div>
+    {/if}
+  </dialog>
+
+  <dialog bind:this={saveDlg} class="modal" aria-labelledby="save-dlg-title" tabindex="-1" oncancel={(e) => { e.preventDefault(); cancelSave(); }}>
+    {#if savePrepared}
+      <h3 id="save-dlg-title">{t("saveTitle")}</h3>
+      <p>{t("saveWarning")}</p>
+      <p class="muted"><strong>{t("saveEmuClosedNotice")}</strong></p>
+      <div class="actions">
+        <button class="ghost" onclick={cancelSave}>{t("cancel")}</button>
+        <button class="primary" onclick={confirmSave}>{t("saveConfirmBtn")}</button>
       </div>
     {/if}
   </dialog>
