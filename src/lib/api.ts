@@ -17,7 +17,7 @@ export const SOURCE_LABEL: Record<Source, string> = {
   gamebanana: SOURCES.gamebanana.label,
 };
 
-export type GbMod = ModEntry & { thumb: string | null; likes: number; views: number; featured: boolean };
+export type GbMod = ModEntry & { thumb: string | null; likes: number; views: number; featured: boolean; nsfw?: boolean };
 export type GbList = { found: boolean; mods: GbMod[] };
 export type GbMore = { tid: string; all: boolean; requestId: number; mods: GbMod[]; complete: boolean };
 export type GbDetail = { text: string; image: string | null; submitter: string | null; version: string | null; downloads: number; size: number; updated: number };
