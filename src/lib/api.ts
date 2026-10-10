@@ -20,6 +20,7 @@ export const SOURCE_LABEL: Record<Source, string> = {
 export type GbMod = ModEntry & { thumb: string | null; likes: number; views: number; featured: boolean };
 export type GbList = { found: boolean; mods: GbMod[] };
 export type GbDetail = { text: string; image: string | null; submitter: string | null; version: string | null; downloads: number; size: number; updated: number };
+export type FrameworkStatus = { needed: boolean; skyline: boolean; arcropolis: boolean | null };
 export type ModFile = { src: string; dest: string };
 export type ModEntry = {
   id: string;
@@ -44,6 +45,7 @@ export type Prepared = { token: string; roots: RootInfo[] };
 export type Installed = {
   tid: string;
   folder: string;
+  destination?: "emulator" | "arcropolis";
   modId: string;
   rootKey: string;
   name: string;
@@ -93,6 +95,12 @@ export const api = {
   listInstalled: (tid: string) => invoke<InstalledView[]>("list_installed", { tid }),
   setModEnabled: (tid: string, folder: string, enabled: boolean) =>
     invoke<void>("set_mod_enabled", { tid, folder, enabled }),
+  installFrameworks: (tid: string) => invoke<void>("install_frameworks", { tid }),
+  frameworkStatus: (tid: string) => invoke<FrameworkStatus>("framework_status", { tid }),
+  emuExe: () => invoke<string | null>("emu_exe"),
+  setEmuExe: (path: string) => invoke<void>("set_emu_exe", { path }),
+  setGameFile: (tid: string, path: string) => invoke<void>("set_game_file", { tid, path }),
+  launchGame: (tid: string) => invoke<void>("launch_game", { tid }),
   listConflicts: (tid: string) => invoke<Conflict[]>("list_conflicts", { tid }),
   checkUpdate: () => invoke<UpdateCheck>("check_update"),
   installUpdate: () => invoke<void>("install_update"),

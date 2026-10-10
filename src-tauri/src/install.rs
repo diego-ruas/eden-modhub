@@ -9,11 +9,23 @@ use tauri::{AppHandle, Emitter, State};
 use walkdir::WalkDir;
 
 const TMP_PREFIX: &str = ".eden-mod-manager-tmp-";
+const SMASH_TID: &str = "01006A800016E000";
+const DISABLED_DIR: &str = ".eden-mod-manager-disabled";
+pub(crate) const ARC_DIRS: &[&str] = &["fighter", "sound", "ui", "stream", "stream;", "stage", "effect", "camera", "assist", "item", "prebuilt;", "common"];
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Destination {
+    #[default]
+    Emulator,
+    Arcropolis,
+}
 
 pub struct Root {
     key: String,
     name: String,
     files: Vec<(PathBuf, String)>,
+    destination: Destination,
 }
 
 pub struct PendingInstall {
@@ -48,6 +60,8 @@ pub struct Installed {
     /// emulador onde foi instalado (manifestos antigos, sem o campo, são do Eden)
     #[serde(default)]
     emu: Kind,
+    #[serde(default)]
+    destination: Destination,
     tid: String,
     folder: String,
     mod_id: String,
@@ -112,7 +126,13 @@ fn load_manifest(app: &AppHandle) -> Result<Vec<Installed>, String> {
 
 fn save_manifest(app: &AppHandle, m: &[Installed]) -> Result<(), String> {
     let json = serde_json::to_vec_pretty(m).map_err(|e| e.to_string())?;
-    std::fs::write(manifest_path(app)?, json).map_err(|e| format!("Falha ao salvar manifesto: {e}"))
+    let path = manifest_path(app)?;
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, json).and_then(|_| std::fs::rename(&tmp, &path))
+        .map_err(|e| {
+            let _ = std::fs::remove_file(&tmp);
+            format!("Falha ao salvar manifesto: {e}")
+        })
 }
 
 pub fn cleanup_tmp(load: &Path) {
@@ -177,6 +197,7 @@ pub(crate) async fn download(url: &str, dest: &Path, app: &AppHandle) -> Result<
 
 fn unsafe_path(p: &Path) -> bool {
     p.is_absolute() || p.components().any(|c| matches!(c, Component::ParentDir | Component::Prefix(_) | Component::RootDir))
+        || p.to_string_lossy().replace('\\', "/").split('/').any(|s| s == ".." || s.contains(':'))
 }
 
 pub fn extract(archive: &Path, out: &Path) -> Result<(), String> {
@@ -184,9 +205,14 @@ pub fn extract(archive: &Path, out: &Path) -> Result<(), String> {
     match ext.as_str() {
         "zip" => {
             let f = std::fs::File::open(archive).map_err(|e| e.to_string())?;
-            zip::ZipArchive::new(f)
-                .and_then(|mut z| z.extract(out))
-                .map_err(|e| format!("Falha ao extrair zip: {e}"))
+            let mut z = zip::ZipArchive::new(f).map_err(|e| format!("Falha ao extrair zip: {e}"))?;
+            for n in 0..z.len() {
+                let entry = z.by_index(n).map_err(|e| format!("Falha ao extrair zip: {e}"))?;
+                if unsafe_path(Path::new(entry.name())) || entry.unix_mode().is_some_and(|mode| mode & 0o170000 == 0o120000) {
+                    return Err("Falha ao extrair zip: caminho inseguro".into());
+                }
+            }
+            z.extract(out).map_err(|e| format!("Falha ao extrair zip: {e}"))
         }
         "7z" => sevenz_rust2::decompress_file(archive, out).map_err(|e| format!("Falha ao extrair 7z: {e}")),
         "rar" => {
@@ -194,12 +220,10 @@ pub fn extract(archive: &Path, out: &Path) -> Result<(), String> {
                 .open_for_processing()
                 .map_err(|e| format!("Falha ao abrir rar: {e}"))?;
             while let Some(h) = ar.read_header().map_err(|e| format!("Falha ao ler rar: {e}"))? {
-                ar = if unsafe_path(&h.entry().filename) {
-                    h.skip()
-                } else {
-                    h.extract_with_base(out)
+                if unsafe_path(&h.entry().filename) {
+                    return Err("Falha ao extrair rar: caminho inseguro".into());
                 }
-                .map_err(|e| format!("Falha ao extrair rar: {e}"))?;
+                ar = h.extract_with_base(out).map_err(|e| format!("Falha ao extrair rar: {e}"))?;
             }
             Ok(())
         }
@@ -212,22 +236,63 @@ fn stem(p: &str) -> String {
     f.rsplit_once('.').map(|(s, _)| s).unwrap_or(f).to_string()
 }
 
-fn roots_from_extracted(dir: &Path, fallback: &str) -> Vec<Root> {
-    let mut groups: BTreeMap<String, Vec<(PathBuf, String)>> = BTreeMap::new();
-    for e in WalkDir::new(dir).into_iter().flatten().filter(|e| e.file_type().is_file()) {
-        let rel = e.path().strip_prefix(dir).unwrap().to_string_lossy().replace('\\', "/");
-        // dest vem do zip/7z/rar de terceiros: `..` ou caminho absoluto sairiam da pasta do mod no commit
-        if let Some((root, dest)) = catalog::mod_root(&rel).filter(|(_, d)| !unsafe_path(Path::new(d))) {
-            groups.entry(root).or_default().push((e.path().to_path_buf(), dest));
+fn roots_from_extracted(dir: &Path, fallback: &str, tid: &str) -> Result<Vec<Root>, String> {
+    let files: Vec<_> = WalkDir::new(dir).into_iter().filter_map(Result::ok)
+        .filter(|e| e.file_type().is_file())
+        .map(|e| {
+            let rel = e.path().strip_prefix(dir).unwrap().to_string_lossy().replace('\\', "/");
+            (e.path().to_path_buf(), rel)
+        }).collect();
+    let mut arc_roots = std::collections::BTreeSet::new();
+    let mut wrapped_roots = std::collections::BTreeSet::new();
+    for (_, rel) in &files {
+        let segs: Vec<_> = rel.split('/').collect();
+        if let Some(i) = segs.windows(2).position(|s| s == ["ultimate", "mods"]) {
+            if segs.len() > i + 3 {
+                let root = segs[..i + 3].join("/");
+                wrapped_roots.insert(root.clone());
+                arc_roots.insert(root);
+            }
+        } else if catalog::mod_root(rel).is_none() {
+            if let Some(i) = segs[..segs.len().saturating_sub(1)].iter()
+                .position(|s| ARC_DIRS.contains(s)) {
+                arc_roots.insert(segs[..i].join("/"));
+            }
         }
     }
-    groups
-        .into_iter()
-        .map(|(key, files)| Root { name: catalog::display_name(&key, fallback), key, files })
-        .collect()
+    // Um diretório de conteúdo dentro de outro mod não inicia uma segunda variante.
+    arc_roots = arc_roots.iter().filter(|root| wrapped_roots.contains(*root) || !arc_roots.iter().any(|parent|
+        parent != *root && (parent.is_empty() || root.starts_with(&format!("{parent}/"))))).cloned().collect();
+    let smash = tid.eq_ignore_ascii_case(SMASH_TID);
+    let mut groups: BTreeMap<(String, bool), Vec<(PathBuf, String)>> = BTreeMap::new();
+    for (path, rel) in files {
+        if unsafe_path(Path::new(&rel)) { continue; }
+        let arc = arc_roots.iter().filter_map(|root| {
+            if root.is_empty() { Some((root, rel.as_str())) }
+            else { rel.strip_prefix(root.as_str()).and_then(|s| s.strip_prefix('/')).map(|s| (root, s)) }
+        }).max_by_key(|(root, _)| root.len());
+        let ordinary = catalog::mod_root(&rel).filter(|(_, d)| !unsafe_path(Path::new(d)));
+        let ordinary_tree = rel.split('/').any(|s| ["romfs", "exefs", "cheats"].iter().any(|d| s.eq_ignore_ascii_case(d)));
+        if smash {
+            if let Some((root, dest)) = arc.filter(|(root, _)| wrapped_roots.contains(*root) || !ordinary_tree) {
+                groups.entry((root.clone(), true)).or_default().push((path, dest.to_string()));
+                continue;
+            }
+        }
+        if let Some((root, dest)) = ordinary {
+            groups.entry((root, false)).or_default().push((path, dest));
+        }
+    }
+    if !wrapped_roots.is_empty() && !smash {
+        return Err("ARCropolis requer Super Smash Bros. Ultimate.".into());
+    }
+    Ok(groups.into_iter().map(|((key, arc), files)| Root {
+        name: catalog::display_name(&key, fallback), key: if arc { format!("arcropolis:{key}") } else { key }, files,
+        destination: if arc { Destination::Arcropolis } else { Destination::Emulator },
+    }).collect())
 }
 
-async fn do_prepare(app: &AppHandle, m: &catalog::ModEntry, tmp: &Path) -> Result<Vec<Root>, String> {
+async fn do_prepare(app: &AppHandle, m: &catalog::ModEntry, tmp: &Path, tid: &str) -> Result<Vec<Root>, String> {
     let url = |src: &str| m.source.raw_url(src);
     match m.kind {
         ModKind::Files => {
@@ -237,7 +302,7 @@ async fn do_prepare(app: &AppHandle, m: &catalog::ModEntry, tmp: &Path) -> Resul
                 download(&url(&f.src), &dest, app).await?;
                 files.push((dest, f.dest.clone()));
             }
-            Ok(vec![Root { key: String::new(), name: m.name.clone(), files }])
+            Ok(vec![Root { key: String::new(), name: m.name.clone(), files, destination: Destination::Emulator }])
         }
         ModKind::Archive => {
             let src = &m.files[0].src;
@@ -254,20 +319,20 @@ async fn do_prepare(app: &AppHandle, m: &catalog::ModEntry, tmp: &Path) -> Resul
             tauri::async_runtime::spawn_blocking(move || extract(&arc, &xx))
                 .await
                 .map_err(|e| e.to_string())??;
-            Ok(roots_from_extracted(&x, &name))
+            roots_from_extracted(&x, &name, tid)
         }
         ModKind::Pack => {
-            let (url, tid, size) = (m.source.raw_url(crate::pack::ZIP), m.files[0].src.clone(), m.size);
+            let (url, pack_tid, size) = (m.source.raw_url(crate::pack::ZIP), m.files[0].src.clone(), m.size);
             let x = tmp.join("x");
             let (xx, app2) = (x.clone(), app.clone());
             tauri::async_runtime::spawn_blocking(move || {
-                crate::pack::extract(&url, &tid, size, &xx, |received, total| {
+                crate::pack::extract(&url, &pack_tid, size, &xx, |received, total| {
                     let _ = app2.emit("download-progress", Progress { received, total: Some(total) });
                 })
             })
                 .await
                 .map_err(|e| e.to_string())??;
-            Ok(roots_from_extracted(&x, &m.name))
+            roots_from_extracted(&x, &m.name, tid)
         }
     }
 }
@@ -293,7 +358,7 @@ pub async fn prepare_install(
         return Err("Este mod é de outro jogo".into());
     }
     let (tmp, token) = new_tmp(&app)?;
-    let r = do_prepare(&app, &m, &tmp).await;
+    let r = do_prepare(&app, &m, &tmp, &tid).await;
     stage(&pending, tid, mod_id, m.version.clone(), tmp, token, r)
 }
 
@@ -346,51 +411,326 @@ pub async fn prepare_local(app: AppHandle, pending: State<'_, Pending>, tid: Str
     let (tmp, token) = new_tmp(&app)?;
     let (arc, out) = (src, tmp.join("x"));
     let name = stem(&file);
-    let r = tauri::async_runtime::spawn_blocking(move || extract(&arc, &out).map(|_| roots_from_extracted(&out, &name)))
+    let selected_tid = tid.clone();
+    let r = tauri::async_runtime::spawn_blocking(move || extract(&arc, &out).and_then(|_| roots_from_extracted(&out, &name, &selected_tid)))
         .await
         .map_err(|e| e.to_string())
-        .and_then(|r| r)
-        .and_then(|r| if r.is_empty() { Err("Nenhuma pasta romfs/exefs encontrada no arquivo".into()) } else { Ok(r) });
+        .and_then(|r| r);
     stage(&pending, tid, format!("local:{file}"), None, tmp, token, r)
+}
+
+fn destination_dir(emu: &crate::emu::Emu, tid: &str, destination: Destination, disabled: bool) -> Result<PathBuf, String> {
+    crate::emu::check_tid(tid)?;
+    if destination == Destination::Emulator { return Ok(emu.tid_dir(tid)); }
+    if !tid.eq_ignore_ascii_case(SMASH_TID) { return Err("ARCropolis requer Super Smash Bros. Ultimate.".into()); }
+    if emu.kind == Kind::Yuzu { return Err("ARCropolis não é compatível com este emulador.".into()); }
+    Ok(emu.sd_dir().join("ultimate").join(if disabled { DISABLED_DIR } else { "mods" }))
+}
+
+fn check_arcropolis(emu: &crate::emu::Emu, tid: &str) -> Result<(), String> {
+    destination_dir(emu, tid, Destination::Arcropolis, false)?;
+    let framework = emu.sd_dir().join("atmosphere/contents").join(SMASH_TID);
+    let missing: Vec<_> = [ARC_MARKER, SKYLINE_MARKER, NPDM_MARKER]
+        .into_iter().map(|p| framework.join(p)).filter(|p| !p.is_file()).collect();
+    if missing.is_empty() { Ok(()) } else {
+        Err(format!("Skyline/ARCropolis não encontrados na SD emulada: {}",
+            missing.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")))
+    }
+}
+
+const ARC_MARKER: &str = "romfs/skyline/plugins/libarcropolis.nro";
+const SKYLINE_MARKER: &str = "exefs/subsdk9";
+const NPDM_MARKER: &str = "exefs/main.npdm";
+/// `main.npdm` antes de `subsdk9`: o `subsdk9` é o último a aparecer na instalação.
+const SKYLINE_FILES: [&str; 2] = [NPDM_MARKER, SKYLINE_MARKER];
+
+const SKYLINE_URL: &str = "https://github.com/skyline-dev/skyline/releases/latest/download/skyline.zip";
+const ARCROPOLIS_URL: &str = "https://github.com/Raytwo/ARCropolis/releases/latest/download/release.zip";
+
+/// Copia do zip a primeira entrada cujo caminho (minúsculo, com `/`) termina em `sufixo` para `dest/<destino>`.
+/// Normaliza a caixa do TID: o destino é sempre o caminho canônico, não o do zip.
+fn framework_files(zip: &Path, files: &[(&str, &str)], dest: &Path) -> Result<(), String> {
+    let file = std::fs::File::open(zip).map_err(|e| format!("Falha ao extrair zip: {e}"))?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("Falha ao extrair zip: {e}"))?;
+    let names: Vec<(bool, String)> = (0..archive.len())
+        .map(|i| archive.by_index_raw(i).map(|f| (f.is_dir(), f.name().replace('\\', "/").to_ascii_lowercase())))
+        .collect::<Result<_, _>>()
+        .map_err(|e| format!("Falha ao extrair zip: {e}"))?;
+    let mut found = Vec::new();
+    for (suffix, rel) in files {
+        let i = names.iter().position(|(dir, n)| !dir && n.ends_with(suffix))
+            .ok_or("Pacote do Skyline/ARCropolis em formato inesperado")?;
+        found.push((i, *rel));
+    }
+    for (i, rel) in found {
+        let mut entry = archive.by_index(i).map_err(|e| format!("Falha ao extrair zip: {e}"))?;
+        copy_entry(&mut entry, &dest.join(rel))?;
+    }
+    Ok(())
+}
+
+/// Grava a entrada em `target` via `.part` + rename, para nunca deixar arquivo pela metade.
+fn copy_entry(entry: &mut impl std::io::Read, target: &Path) -> Result<(), String> {
+    let mut name = target.file_name().unwrap().to_os_string();
+    name.push(".part");
+    let part = target.with_file_name(name);
+    let copied = std::fs::create_dir_all(target.parent().unwrap())
+        .and_then(|_| std::fs::File::create(&part))
+        .and_then(|mut f| std::io::copy(entry, &mut f).map(|_| ()))
+        .and_then(|_| std::fs::rename(&part, target));
+    if let Err(e) = copied {
+        let _ = std::fs::remove_file(&part);
+        return Err(format!("Falha ao mover arquivo: {e}"));
+    }
+    Ok(())
+}
+
+/// O release.zip do ARCropolis também traz `ultimate/arcropolis/` (layouts do menu e config) na raiz da SD.
+/// Copia só o que ainda não existe, para não sobrescrever configuração do usuário.
+fn arcropolis_resources(zip: &Path, sd: &Path) -> Result<(), String> {
+    let file = std::fs::File::open(zip).map_err(|e| format!("Falha ao extrair zip: {e}"))?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("Falha ao extrair zip: {e}"))?;
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i).map_err(|e| format!("Falha ao extrair zip: {e}"))?;
+        let Some(rel) = entry.enclosed_name() else { continue };
+        if entry.is_dir() || !rel.starts_with("ultimate/arcropolis") { continue; }
+        let target = sd.join(rel);
+        if !target.exists() { copy_entry(&mut entry, &target)?; }
+    }
+    Ok(())
+}
+
+/// Baixa o zip em uma pasta temporária, entrega o caminho a `install` e apaga a pasta.
+async fn with_package(app: &AppHandle, url: &str, install: impl FnOnce(&Path) -> Result<(), String>) -> Result<(), String> {
+    let (tmp, _) = new_tmp(app)?;
+    let zip = tmp.join("framework.zip");
+    let r = match download(url, &zip, app).await {
+        Ok(()) => install(&zip),
+        Err(e) => Err(e),
+    };
+    let _ = std::fs::remove_dir_all(&tmp);
+    r
+}
+
+/// Plugin do Skyline dentro de um mod (`romfs/skyline/plugins/*.nro`): o jogo precisa do Skyline.
+fn is_skyline_plugin(rel: &str) -> bool {
+    let l = rel.replace('\\', "/").to_ascii_lowercase();
+    l.starts_with("romfs/skyline/plugins/") && l.ends_with(".nro")
+}
+
+/// `mod_dir` é a pasta de um mod já instalado (`<load>/<tid>/<mod>`).
+fn has_skyline_plugins(mod_dir: &Path) -> bool {
+    std::fs::read_dir(mod_dir.join("romfs/skyline/plugins")).is_ok_and(|rd| rd.flatten()
+        .any(|e| e.path().extension().is_some_and(|x| x.eq_ignore_ascii_case("nro"))))
+}
+
+/// O `main.npdm` do Skyline traz o TID do Smash no ACI0 (offset 0x340); outros jogos precisam do próprio TID.
+fn patch_npdm_tid(path: &Path, tid: &str) -> Result<(), String> {
+    let id = u64::from_str_radix(tid, 16).map_err(|_| "TID inválido".to_string())?;
+    let mut b = std::fs::read(path).map_err(|e| format!("Falha ao mover arquivo: {e}"))?;
+    if b.len() < 0x348 || &b[0x330..0x334] != b"ACI0" {
+        return Err("Pacote do Skyline/ARCropolis em formato inesperado".into());
+    }
+    b[0x340..0x348].copy_from_slice(&id.to_le_bytes());
+    let mut part = path.as_os_str().to_owned();
+    part.push(".part");
+    let part = PathBuf::from(part);
+    std::fs::write(&part, &b).and_then(|_| std::fs::rename(&part, path)).map_err(|e| {
+        let _ = std::fs::remove_file(&part);
+        format!("Falha ao mover arquivo: {e}")
+    })
+}
+
+/// `<SD>/atmosphere/contents/<TID>`: onde ficam o Skyline (`exefs/`) e, no Smash, o ARCropolis.
+fn framework_dir(emu: &crate::emu::Emu, tid: &str) -> PathBuf {
+    emu.sd_dir().join("atmosphere/contents").join(tid.to_ascii_uppercase())
+}
+
+/// Instala o que falta do Skyline do jogo `tid`. Nunca sobrescreve `subsdk9` nem um `main.npdm` já existente.
+pub(crate) async fn ensure_skyline(app: &AppHandle, tid: &str) -> Result<(), String> {
+    crate::emu::check_tid(tid)?;
+    let emu = crate::resolve_emu(app)?;
+    let dir = framework_dir(&emu, tid);
+    if SKYLINE_FILES.iter().all(|p| dir.join(p).is_file()) { return Ok(()); }
+    with_package(app, SKYLINE_URL, |zip| skyline_from_zip(zip, &dir, tid)).await
+}
+
+/// Extrai e valida (NPDM com o TID do jogo) numa pasta ao lado do zip e só então publica em `dir`:
+/// `main.npdm` primeiro e `subsdk9` por último, para um erro no meio nunca deixar o Skyline "instalado" pela metade.
+fn skyline_from_zip(zip: &Path, dir: &Path, tid: &str) -> Result<(), String> {
+    let missing: Vec<_> = SKYLINE_FILES.iter().copied().filter(|p| !dir.join(p).is_file()).collect();
+    let stage = zip.with_file_name("stage");
+    let files: Vec<_> = missing.iter().map(|p| (*p, *p)).collect();
+    framework_files(zip, &files, &stage)?;
+    if missing.contains(&NPDM_MARKER) { patch_npdm_tid(&stage.join(NPDM_MARKER), tid)?; }
+    for rel in missing {
+        let mut f = std::fs::File::open(stage.join(rel)).map_err(|e| format!("Falha ao mover arquivo: {e}"))?;
+        copy_entry(&mut f, &dir.join(rel))?;
+    }
+    Ok(())
+}
+
+/// Smash: Skyline + ARCropolis. Baixa e instala o que faltar na SD emulada, sem sobrescrever arquivos presentes.
+pub(crate) async fn ensure_arcropolis(app: &AppHandle, tid: &str) -> Result<(), String> {
+    let emu = crate::resolve_emu(app)?;
+    destination_dir(&emu, tid, Destination::Arcropolis, false)?;
+    let dir = framework_dir(&emu, SMASH_TID);
+    if !dir.join(ARC_MARKER).is_file() {
+        with_package(app, ARCROPOLIS_URL, |zip| {
+            arcropolis_resources(zip, &emu.sd_dir())?;
+            framework_files(zip, &[("skyline/plugins/libarcropolis.nro", ARC_MARKER)], &dir)
+        }).await?;
+    }
+    ensure_skyline(app, SMASH_TID).await?;
+    check_arcropolis(&emu, tid)
+}
+
+/// Instala o que o jogo precisa: Skyline + ARCropolis no Smash, só o Skyline nos demais.
+#[tauri::command]
+pub async fn install_frameworks(app: AppHandle, tid: String) -> Result<(), String> {
+    crate::emu::check_tid(&tid)?;
+    if tid.eq_ignore_ascii_case(SMASH_TID) { ensure_arcropolis(&app, &tid).await } else { ensure_skyline(&app, &tid).await }
+}
+
+#[derive(Serialize)]
+pub struct FrameworkStatus {
+    /// O jogo precisa do Skyline: é o Smash ou tem mod com plugin do Skyline ativo.
+    needed: bool,
+    skyline: bool,
+    /// `None` fora do Smash (ou no yuzu, que não suporta ARCropolis).
+    arcropolis: Option<bool>,
+}
+
+/// Detecta o que já está instalado (só leitura, sem rede).
+#[tauri::command]
+pub fn framework_status(app: AppHandle, tid: String) -> Result<FrameworkStatus, String> {
+    crate::emu::check_tid(&tid)?;
+    let emu = crate::resolve_emu(&app)?;
+    let dir = framework_dir(&emu, &tid);
+    let smash = tid.eq_ignore_ascii_case(SMASH_TID);
+    let off = crate::addons::disabled(&emu, &tid);
+    let plugins = std::fs::read_dir(emu.tid_dir(&tid)).is_ok_and(|rd| rd.flatten().any(|e|
+        !off.contains(&e.file_name().to_string_lossy().into_owned()) && has_skyline_plugins(&e.path())));
+    Ok(FrameworkStatus {
+        needed: smash || plugins,
+        skyline: SKYLINE_FILES.iter().all(|p| dir.join(p).is_file()),
+        arcropolis: (smash && emu.kind != Kind::Yuzu).then(|| dir.join(ARC_MARKER).is_file()),
+    })
+}
+
+/// A raiz configurada pode ser um link/junction; os caminhos do mod abaixo dela não.
+fn checked_path(base: &Path, relative: &str) -> Result<PathBuf, String> {
+    let rel = Path::new(relative);
+    if relative.is_empty() || unsafe_path(rel) || relative.split(['/', '\\']).any(|s| s == "." || s == ".." || s.is_empty()) {
+        return Err("Pasta não foi instalada pelo Eden Mod Manager".into());
+    }
+    let target = base.join(rel);
+    for parent in target.ancestors().take_while(|p| *p != base) {
+        if let Ok(meta) = std::fs::symlink_metadata(parent) {
+            if meta.file_type().is_symlink() {
+                return Err("Pasta não foi instalada pelo Eden Mod Manager".into());
+            }
+        }
+    }
+    Ok(target)
+}
+
+fn item_paths(emu: &crate::emu::Emu, item: &Installed) -> Result<(PathBuf, Option<PathBuf>), String> {
+    if item.folder.contains(['/', '\\']) { return Err("Pasta não foi instalada pelo Eden Mod Manager".into()); }
+    let on = checked_path(&destination_dir(emu, &item.tid, item.destination, false)?, &item.folder)?;
+    let off = if item.destination == Destination::Arcropolis {
+        Some(checked_path(&destination_dir(emu, &item.tid, item.destination, true)?, &item.folder)?)
+    } else { None };
+    Ok((on, off))
+}
+
+fn item_location(emu: &crate::emu::Emu, item: &Installed) -> Result<(PathBuf, bool), String> {
+    let (on, off) = item_paths(emu, item)?;
+    if let Some(off) = off {
+        // Duas pastas não podem ser atribuídas ao mesmo registro com segurança.
+        if on.exists() && off.exists() { return Err(format!("Pasta de destino já existe: {}", on.display())); }
+        if off.is_dir() { return Ok((off, false)); }
+    }
+    Ok((on, true))
+}
+
+fn toggle_arcropolis(emu: &crate::emu::Emu, item: &Installed, enabled: bool) -> Result<(), String> {
+    let (source, current) = item_location(emu, item)?;
+    if current == enabled { return Ok(()); }
+    if enabled { check_arcropolis(emu, &item.tid)?; }
+    let (on, off) = item_paths(emu, item)?;
+    let target = if enabled { on } else { off.unwrap() };
+    if target.exists() { return Err(format!("Pasta de destino já existe: {}", target.display())); }
+    std::fs::create_dir_all(target.parent().unwrap()).map_err(|e| e.to_string())?;
+    std::fs::rename(source, target).map_err(|e| format!("Falha ao mover arquivo: {e}"))
 }
 
 fn commit(app: &AppHandle, p: PendingInstall, keys: &[String]) -> Result<Vec<Installed>, String> {
     let emu = crate::resolve_emu(app)?;
-    let game_dir = emu.tid_dir(&p.tid);
     let mut manifest = load_manifest(app)?;
+    let selected: Vec<_> = p.roots.iter().filter(|r| keys.contains(&r.key)).collect();
+    if selected.iter().any(|r| r.destination == Destination::Arcropolis) { check_arcropolis(&emu, &p.tid)?; }
     let mut done = Vec::new();
-    for root in p.roots.iter().filter(|r| keys.contains(&r.key)) {
-        let base = sanitize(&root.name);
-        let reinstall = manifest
-            .iter()
-            .position(|i| i.emu == emu.kind && i.tid == p.tid && i.mod_id == p.mod_id && i.root_key == root.key);
-        if let Some(pos) = reinstall {
-            let _ = std::fs::remove_dir_all(game_dir.join(&manifest[pos].folder));
-            manifest.remove(pos);
-        }
-        let folder = unique_folder(&game_dir, &base);
-        let target = game_dir.join(&folder);
-        std::fs::create_dir_all(&target).map_err(|e| e.to_string())?;
-        for (src, dest) in &root.files {
-            let to = target.join(dest);
-            if let Some(d) = to.parent() {
-                std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
+    let mut created = Vec::new();
+    let mut backups = Vec::new();
+    let result = (|| {
+        for (n, root) in selected.into_iter().enumerate() {
+            let reinstall = manifest.iter().position(|i| i.emu == emu.kind && i.tid == p.tid
+                && i.destination == root.destination && i.mod_id == p.mod_id && i.root_key == root.key);
+            let old = reinstall.map(|pos| item_location(&emu, &manifest[pos])).transpose()?;
+            let game_dir = destination_dir(&emu, &p.tid, root.destination, old.as_ref().is_some_and(|(_, on)| !on))?;
+            let disabled_dir = destination_dir(&emu, &p.tid, root.destination, true)?;
+            let base = sanitize(&root.name);
+            let folder = if let Some(pos) = reinstall { manifest[pos].folder.clone() } else {
+                let mut folder = unique_folder_pair(&game_dir, &disabled_dir, &base);
+                let mut suffix = 2;
+                while manifest.iter().any(|i| i.emu == emu.kind && i.tid == p.tid && i.folder == folder)
+                    || emu.tid_dir(&p.tid).join(&folder).exists() {
+                    folder = unique_folder_pair(&game_dir, &disabled_dir, &format!("{base} ({suffix})"));
+                    suffix += 1;
+                }
+                folder
+            };
+            let target = checked_path(&game_dir, &folder)?;
+            let staging = checked_path(&game_dir, &format!("{TMP_PREFIX}{}-{n}", p.tmp.file_name().unwrap().to_string_lossy()))?;
+            std::fs::create_dir_all(&game_dir).map_err(|e| e.to_string())?;
+            std::fs::create_dir(&staging).map_err(|e| e.to_string())?;
+            created.push(staging.clone());
+            for (src, dest) in &root.files {
+                let to = checked_path(&staging, dest)?;
+                if std::fs::symlink_metadata(src).map_err(|e| e.to_string())?.file_type().is_symlink() {
+                    return Err("Pasta não foi instalada pelo Eden Mod Manager".into());
+                }
+                if let Some(d) = to.parent() { std::fs::create_dir_all(d).map_err(|e| e.to_string())?; }
+                std::fs::copy(src, &to).map_err(|e| format!("Falha ao mover arquivo: {e}"))?;
             }
-            std::fs::rename(src, &to).map_err(|e| format!("Falha ao mover arquivo: {e}"))?;
+            if let Some((old, _)) = old {
+                if old.exists() {
+                    let backup = checked_path(old.parent().unwrap(), &format!("{TMP_PREFIX}backup-{}-{n}", p.tmp.file_name().unwrap().to_string_lossy()))?;
+                    if backup.exists() { return Err(format!("Pasta de destino já existe: {}", backup.display())); }
+                    std::fs::rename(&old, &backup).map_err(|e| format!("Falha ao mover arquivo: {e}"))?;
+                    backups.push((old, backup));
+                }
+            }
+            if target.exists() { return Err(format!("Pasta de destino já existe: {}", target.display())); }
+            std::fs::rename(&staging, &target).map_err(|e| format!("Falha ao mover arquivo: {e}"))?;
+            created.push(target);
+            if let Some(pos) = reinstall { manifest.remove(pos); }
+            done.push(Installed {
+                emu: emu.kind, destination: root.destination, tid: p.tid.clone(), folder,
+                mod_id: p.mod_id.clone(), root_key: root.key.clone(), name: root.name.clone(),
+                version: p.version.clone(), installed_at: catalog::now_secs(),
+            });
         }
-        done.push(Installed {
-            emu: emu.kind,
-            tid: p.tid.clone(),
-            folder,
-            mod_id: p.mod_id.clone(),
-            root_key: root.key.clone(),
-            name: root.name.clone(),
-            version: p.version.clone(),
-            installed_at: catalog::now_secs(),
-        });
+        manifest.extend(done.iter().cloned());
+        save_manifest(app, &manifest)
+    })();
+    if let Err(e) = result {
+        for target in created.iter().rev() { let _ = std::fs::remove_dir_all(target); }
+        for (old, backup) in backups.iter().rev() { let _ = std::fs::rename(backup, old); }
+        return Err(e);
     }
-    manifest.extend(done.iter().cloned());
-    save_manifest(app, &manifest)?;
+    for (_, backup) in backups { let _ = std::fs::remove_dir_all(backup); }
     Ok(done)
 }
 
@@ -405,8 +745,18 @@ fn unique_folder(dir: &Path, base: &str) -> String {
     folder
 }
 
+fn unique_folder_pair(dir: &Path, disabled: &Path, base: &str) -> String {
+    let mut folder = unique_folder(dir, base);
+    let mut n = 2;
+    while dir.join(&folder).exists() || disabled.join(&folder).exists() {
+        folder = format!("{base} ({n})");
+        n += 1;
+    }
+    folder
+}
+
 #[tauri::command]
-pub fn commit_install(
+pub async fn commit_install(
     app: AppHandle,
     pending: State<'_, Pending>,
     token: String,
@@ -414,7 +764,14 @@ pub fn commit_install(
 ) -> Result<Vec<Installed>, String> {
     let p = pending.0.lock().remove(&token).ok_or("Instalação pendente não encontrada")?;
     let tmp = p.tmp.clone();
-    let r = commit(&app, p, &keys);
+    let selected = |r: &&Root| keys.contains(&r.key);
+    let arc = p.roots.iter().filter(selected).any(|r| r.destination == Destination::Arcropolis);
+    let sky = p.roots.iter().filter(selected).any(|r| r.files.iter().any(|(_, rel)| is_skyline_plugin(rel)));
+    let ensured = if arc { ensure_arcropolis(&app, &p.tid).await } else if sky { ensure_skyline(&app, &p.tid).await } else { Ok(()) };
+    let r = match ensured {
+        Ok(()) => commit(&app, p, &keys),
+        Err(e) => Err(e),
+    };
     let _ = std::fs::remove_dir_all(tmp);
     r
 }
@@ -431,11 +788,12 @@ pub fn list_installed(app: AppHandle, tid: String) -> Result<Vec<InstalledView>,
     crate::emu::check_tid(&tid)?;
     let emu = crate::resolve_emu(&app)?;
     let all = load_manifest(&app)?;
-    let kept: Vec<Installed> = all
-        .iter()
-        .filter(|i| i.emu != emu.kind || i.tid != tid || emu.tid_dir(&i.tid).join(&i.folder).is_dir())
-        .cloned()
-        .collect();
+    let mut kept = Vec::new();
+    for item in &all {
+        if item.emu != emu.kind || item.tid != tid || item_location(&emu, item).map(|(p, _)| p.is_dir()).unwrap_or(true) {
+            kept.push(item.clone());
+        }
+    }
     if kept.len() != all.len() {
         save_manifest(&app, &kept)?;
     }
@@ -443,18 +801,41 @@ pub fn list_installed(app: AppHandle, tid: String) -> Result<Vec<InstalledView>,
     Ok(kept
         .into_iter()
         .filter(|i| i.emu == emu.kind && i.tid == tid)
-        .map(|item| InstalledView { enabled: !off.contains(&item.folder), item })
+        .map(|item| {
+            let enabled = if item.destination == Destination::Arcropolis {
+                item_location(&emu, &item).map(|(_, on)| on).unwrap_or(false)
+            } else { !off.contains(&item.folder) };
+            InstalledView { enabled, item }
+        })
         .collect())
 }
 
+pub(crate) fn mod_folder(app: &AppHandle, tid: &str) -> Result<PathBuf, String> {
+    crate::emu::check_tid(tid)?;
+    let emu = crate::resolve_emu(app)?;
+    if load_manifest(app)?.iter().any(|i| i.emu == emu.kind && i.tid == tid
+        && i.destination == Destination::Arcropolis && item_paths(&emu, i)
+            .is_ok_and(|(on, off)| on.is_dir() || off.is_some_and(|p| p.is_dir()))) {
+        destination_dir(&emu, tid, Destination::Arcropolis, false)
+    } else { Ok(emu.tid_dir(tid)) }
+}
+
 #[tauri::command]
-pub fn set_mod_enabled(app: AppHandle, tid: String, folder: String, enabled: bool) -> Result<(), String> {
+pub async fn set_mod_enabled(app: AppHandle, tid: String, folder: String, enabled: bool) -> Result<(), String> {
     crate::emu::check_tid(&tid)?;
     let emu = crate::resolve_emu(&app)?;
-    if !load_manifest(&app)?.iter().any(|i| i.emu == emu.kind && i.tid == tid && i.folder == folder) {
-        return Err("Pasta não foi instalada pelo Eden Mod Manager".into());
+    let manifest = load_manifest(&app)?;
+    let item = manifest.iter().find(|i| i.emu == emu.kind && i.tid == tid && i.folder == folder)
+        .cloned()
+        .ok_or("Pasta não foi instalada pelo Eden Mod Manager")?;
+    item_paths(&emu, &item)?;
+    if item.destination == Destination::Arcropolis {
+        if enabled { ensure_arcropolis(&app, &tid).await?; }
+        toggle_arcropolis(&emu, &item, enabled)
+    } else {
+        if enabled && has_skyline_plugins(&emu.tid_dir(&tid).join(&folder)) { ensure_skyline(&app, &tid).await?; }
+        crate::addons::set_enabled(&emu, &tid, &folder, enabled)
     }
-    crate::addons::set_enabled(&emu, &tid, &folder, enabled)
 }
 
 #[tauri::command]
@@ -462,7 +843,11 @@ pub async fn list_conflicts(app: AppHandle, tid: String) -> Result<Vec<crate::ad
     crate::emu::check_tid(&tid)?;
     let emu = crate::resolve_emu(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
-        crate::addons::conflicts(&emu.tid_dir(&tid), &crate::addons::disabled(&emu, &tid))
+        let mut conflicts = crate::addons::conflicts(&emu.tid_dir(&tid), &crate::addons::disabled(&emu, &tid));
+        if tid.eq_ignore_ascii_case(SMASH_TID) && emu.kind != Kind::Yuzu {
+            conflicts.extend(crate::addons::arcropolis_conflicts(&emu.sd_dir().join("ultimate/mods")));
+        }
+        conflicts
     })
     .await
     .map_err(|e| e.to_string())
@@ -477,12 +862,13 @@ pub fn uninstall(app: AppHandle, tid: String, folder: String) -> Result<(), Stri
         .iter()
         .position(|i| i.emu == emu.kind && i.tid == tid && i.folder == folder)
         .ok_or("Pasta não foi instalada pelo Eden Mod Manager")?;
-    match std::fs::remove_dir_all(emu.tid_dir(&tid).join(&folder)) {
+    let (target, _) = item_location(&emu, &m[pos])?;
+    match std::fs::remove_dir_all(target) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(format!("Falha ao remover: {e}")),
     }
-    if crate::addons::disabled(&emu, &tid).contains(&folder) {
+    if m[pos].destination == Destination::Emulator && crate::addons::disabled(&emu, &tid).contains(&folder) {
         let _ = crate::addons::set_enabled(&emu, &tid, &folder, true);
     }
     m.remove(pos);
@@ -492,6 +878,191 @@ pub fn uninstall(app: AppHandle, tid: String, folder: String) -> Result<(), Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("emm-arc-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write_file(dir: &Path, rel: &str) {
+        let path = dir.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, b"payload").unwrap();
+    }
+
+    #[test]
+    fn legacy_manifest_routes_to_normal_mods_and_new_manifest_roundtrips() {
+        let legacy = r#"{"tid":"01006A800016E000","folder":"FPS","modId":"fps","rootKey":"","name":"FPS","version":null,"installedAt":1}"#;
+        let mut item: Installed = serde_json::from_str(legacy).unwrap();
+        let dir = test_dir("manifest");
+        let emu = crate::emu::Emu { kind: Kind::Eden, dir: dir.clone() };
+        std::fs::create_dir_all(dir.join("config")).unwrap();
+        assert_eq!(item_paths(&emu, &item).unwrap(), (dir.join("load").join(SMASH_TID).join("FPS"), None));
+        item.destination = Destination::Arcropolis;
+        let json = serde_json::to_string(&item).unwrap();
+        assert!(json.contains(r#""destination":"arcropolis""#));
+        let restored: Installed = serde_json::from_str(&json).unwrap();
+        assert_eq!(item_paths(&emu, &restored).unwrap().0, dir.join("sdmc/ultimate/mods/FPS"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn mixed_flat_archive_routes_normal_trees_separately_from_arc_payload() {
+        let dir = test_dir("mixed-flat");
+        for file in ["fighter/snake/model.bin", "config.json", "stage/battlefield/model.bin",
+            "romfs/normal.bin", "exefs/main.ips", "cheats/codes.txt",
+            "ultimate/mods/Explicit/fighter/model.bin", "ultimate/mods/Explicit/romfs/payload.bin",
+            "ultimate/mods/Explicit/config.toml"] {
+            write_file(&dir, file);
+        }
+        let roots = roots_from_extracted(&dir, "archive", SMASH_TID).unwrap();
+        let normal = roots.iter().find(|r| r.destination == Destination::Emulator).unwrap();
+        assert_eq!(normal.files.len(), 3);
+        assert!(normal.files.iter().all(|(_, p)| p.starts_with("romfs/") || p.starts_with("exefs/") || p.starts_with("cheats/")));
+        let loose = roots.iter().find(|r| r.key == "arcropolis:").unwrap();
+        assert_eq!(loose.files.len(), 3);
+        assert!(loose.files.iter().any(|(_, p)| p == "config.json"));
+        let wrapped = roots.iter().find(|r| r.key == "arcropolis:ultimate/mods/Explicit").unwrap();
+        assert_eq!(wrapped.files.len(), 3);
+        assert!(wrapped.files.iter().any(|(_, p)| p == "romfs/payload.bin"));
+        assert!(wrapped.files.iter().any(|(_, p)| p == "config.toml"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn arcropolis_detection_preserves_root_files_and_scopes_game() {
+        let dir = test_dir("loose");
+        for file in ["Chief/fighter/snake/model.bin", "Chief/sound/voice.bin", "Chief/ui/icon.bin",
+            "Chief/stream;/music.bin", "Chief/config.json", "Chief/custom/other.bin", "readme.txt",
+            "FPS/exefs/main.ips"] { write_file(&dir, file); }
+        let roots = roots_from_extracted(&dir, "archive", SMASH_TID).unwrap();
+        let arc = roots.iter().find(|r| r.destination == Destination::Arcropolis).unwrap();
+        assert_eq!(arc.key, "arcropolis:Chief");
+        assert_eq!(arc.files.len(), 6);
+        assert!(arc.files.iter().any(|(_, p)| p == "config.json"));
+        assert!(arc.files.iter().any(|(_, p)| p == "stream;/music.bin"));
+        let ordinary = roots.iter().find(|r| r.destination == Destination::Emulator).unwrap();
+        assert_eq!(ordinary.files[0].1, "exefs/main.ips");
+        let other = roots_from_extracted(&dir, "archive", "0100000000000000").unwrap();
+        assert_eq!(other.len(), 1);
+        assert_eq!(other[0].destination, Destination::Emulator);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn arcropolis_wrappers_keep_configs_not_framework_or_wrapper_files() {
+        let dir = test_dir("wrapper");
+        for file in ["sd/ultimate/mods/A/fighter/x.bin", "sd/ultimate/mods/A/config.toml",
+            "sd/ultimate/mods/B/ui/x.bin", "sd/readme.txt",
+            "sd/atmosphere/contents/01006A800016E000/romfs/skyline/plugins/libarcropolis.nro"] {
+            write_file(&dir, file);
+        }
+        let roots = roots_from_extracted(&dir, "archive", SMASH_TID).unwrap();
+        let arc: Vec<_> = roots.iter().filter(|r| r.destination == Destination::Arcropolis).collect();
+        assert_eq!(arc.len(), 2);
+        assert_eq!(arc[0].files.len(), 2);
+        assert!(arc.iter().flat_map(|r| &r.files).all(|(_, p)| !p.contains("atmosphere") && p != "readme.txt"));
+        let loose = test_dir("wrong-game");
+        write_file(&loose, "fighter/x.bin");
+        assert!(roots_from_extracted(&loose, "archive", "0100000000000000").unwrap().is_empty());
+        let explicit = test_dir("wrong-wrapper");
+        write_file(&explicit, "ultimate/mods/A/fighter/x.bin");
+        assert!(roots_from_extracted(&explicit, "archive", "0100000000000000").err().unwrap().starts_with("ARCropolis requer"));
+        let _ = std::fs::remove_dir_all(explicit);
+        let _ = std::fs::remove_dir_all(dir);
+        let _ = std::fs::remove_dir_all(loose);
+    }
+
+    #[test]
+    fn stage_and_effect_only_archives_preserve_the_complete_root() {
+        let dir = test_dir("stage-effect");
+        for file in ["Arena/stage/battlefield/model.bin", "Arena/config.json",
+            "Particles/effect/common/effect.bin", "Particles/info.toml"] {
+            write_file(&dir, file);
+        }
+        let roots = roots_from_extracted(&dir, "archive", SMASH_TID).unwrap();
+        assert_eq!(roots.len(), 2);
+        assert!(roots.iter().all(|r| r.destination == Destination::Arcropolis && r.files.len() == 2));
+        assert!(roots.iter().flat_map(|r| &r.files).any(|(_, p)| p == "config.json"));
+        assert!(roots.iter().flat_map(|r| &r.files).any(|(_, p)| p == "info.toml"));
+        assert!(roots_from_extracted(&dir, "archive", "0100000000000000").unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn configured_link_root_is_allowed_but_linked_mod_paths_are_rejected() {
+        let dir = test_dir("link-boundary");
+        let storage = dir.join("storage");
+        let outside = dir.join("outside");
+        std::fs::create_dir_all(&storage).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let configured = dir.join("configured");
+        let mod_link = storage.join("linked-mod");
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&storage, &configured).unwrap();
+            std::os::unix::fs::symlink(&outside, &mod_link).unwrap();
+        }
+        #[cfg(windows)]
+        {
+            for (link, target) in [(&configured, &storage), (&mod_link, &outside)] {
+                assert!(std::process::Command::new("cmd").args(["/C", "mklink", "/J"])
+                    .arg(link).arg(target).status().unwrap().success());
+            }
+        }
+        assert_eq!(checked_path(&configured, "safe/fighter/x.bin").unwrap(), configured.join("safe/fighter/x.bin"));
+        assert!(checked_path(&configured, "linked-mod/fighter/x.bin").is_err());
+        #[cfg(unix)]
+        {
+            std::fs::remove_file(&configured).unwrap();
+            std::fs::remove_file(&mod_link).unwrap();
+        }
+        #[cfg(windows)]
+        {
+            std::fs::remove_dir(&configured).unwrap();
+            std::fs::remove_dir(&mod_link).unwrap();
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn arcropolis_prerequisites_lifecycle_and_boundaries() {
+        let dir = test_dir("lifecycle");
+        let emu = crate::emu::Emu { kind: Kind::Ryujinx, dir: dir.clone() };
+        let mut item = Installed { emu: Kind::Ryujinx, destination: Destination::Arcropolis, tid: SMASH_TID.into(),
+            folder: "Chief".into(), mod_id: "local".into(), root_key: "Chief".into(), name: "Chief".into(),
+            version: None, installed_at: 0 };
+        assert!(check_arcropolis(&emu, SMASH_TID).unwrap_err().starts_with("Skyline/ARCropolis não encontrados"));
+        assert!(!emu.sd_dir().join("ultimate").exists());
+        for p in ["romfs/skyline/plugins/libarcropolis.nro", "exefs/subsdk9", "exefs/main.npdm"] {
+            write_file(&emu.sd_dir().join("atmosphere/contents").join(SMASH_TID), p);
+        }
+        check_arcropolis(&emu, SMASH_TID).unwrap();
+        let (on, off) = item_paths(&emu, &item).unwrap();
+        let off = off.unwrap();
+        write_file(&on, "fighter/x.bin");
+        write_file(&on.parent().unwrap().join("Unmanaged"), "fighter/x.bin");
+        toggle_arcropolis(&emu, &item, false).unwrap();
+        assert!(!on.exists());
+        assert!(off.join("fighter/x.bin").is_file());
+        assert!(!item_location(&emu, &item).unwrap().1);
+        assert_eq!(unique_folder_pair(on.parent().unwrap(), off.parent().unwrap(), "Chief"), "Chief (2)");
+        std::fs::create_dir_all(&on).unwrap();
+        assert!(toggle_arcropolis(&emu, &item, true).unwrap_err().starts_with("Pasta de destino já existe:"));
+        std::fs::remove_dir(&on).unwrap();
+        toggle_arcropolis(&emu, &item, true).unwrap();
+        std::fs::remove_dir_all(item_location(&emu, &item).unwrap().0).unwrap();
+        assert!(on.parent().unwrap().join("Unmanaged/fighter/x.bin").exists());
+        item.folder = "../Unmanaged".into();
+        assert!(item_paths(&emu, &item).is_err());
+        assert!(checked_path(&dir, "fighter/../../outside").is_err());
+        let yuzu = crate::emu::Emu { kind: Kind::Yuzu, dir: dir.clone() };
+        assert!(check_arcropolis(&yuzu, SMASH_TID).unwrap_err().starts_with("ARCropolis não é compatível"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn unsafe_path_rejects_traversal_and_absolute() {
@@ -535,6 +1106,160 @@ mod tests {
         let _ = extract(&zp, &out);
         assert!(!base.join("escaped.txt").exists());
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn framework_files_normalizes_tid_case() {
+        use std::io::Write as _;
+        let base = std::env::temp_dir().join(format!("emm-fw-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let zp = base.join("fw.zip");
+        let mut w = zip::ZipWriter::new(std::fs::File::create(&zp).unwrap());
+        let o = zip::write::SimpleFileOptions::default();
+        w.start_file("atmosphere/contents/01006a800016e000/romfs/skyline/plugins/libarcropolis.nro", o).unwrap();
+        w.write_all(b"arc").unwrap();
+        w.start_file("exefs/subsdk9", o).unwrap();
+        w.write_all(b"sky").unwrap();
+        w.finish().unwrap();
+        let dest = base.join("SD/atmosphere/contents/01006A800016E000");
+        framework_files(&zp, &[
+            ("skyline/plugins/libarcropolis.nro", "romfs/skyline/plugins/libarcropolis.nro"),
+            ("exefs/subsdk9", "exefs/subsdk9"),
+        ], &dest).unwrap();
+        assert_eq!(std::fs::read(dest.join("romfs/skyline/plugins/libarcropolis.nro")).unwrap(), b"arc");
+        assert_eq!(std::fs::read(dest.join("exefs/subsdk9")).unwrap(), b"sky");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn framework_files_rejects_unexpected_layout() {
+        use std::io::Write as _;
+        let base = std::env::temp_dir().join(format!("emm-fw-bad-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let zp = base.join("fw.zip");
+        let mut w = zip::ZipWriter::new(std::fs::File::create(&zp).unwrap());
+        w.start_file("readme.txt", zip::write::SimpleFileOptions::default()).unwrap();
+        w.write_all(b"x").unwrap();
+        w.finish().unwrap();
+        let dest = base.join("dest");
+        let r = framework_files(&zp, &[("exefs/subsdk9", "exefs/subsdk9")], &dest);
+        assert_eq!(r, Err("Pacote do Skyline/ARCropolis em formato inesperado".to_string()));
+        assert!(!dest.exists());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn arcropolis_resources_copy_missing_and_keep_existing() {
+        use std::io::Write as _;
+        let base = std::env::temp_dir().join(format!("emm-res-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let zp = base.join("r.zip");
+        let mut w = zip::ZipWriter::new(std::fs::File::create(&zp).unwrap());
+        let o = zip::write::SimpleFileOptions::default();
+        for (n, b) in [("ultimate/arcropolis/config.json", &b"new"[..]), ("ultimate/arcropolis/resources/a.arc", b"arc"), ("other/x.txt", b"x")] {
+            w.start_file(n, o).unwrap();
+            w.write_all(b).unwrap();
+        }
+        w.finish().unwrap();
+        let sd = base.join("SD");
+        std::fs::create_dir_all(sd.join("ultimate/arcropolis")).unwrap();
+        std::fs::write(sd.join("ultimate/arcropolis/config.json"), b"mine").unwrap();
+        arcropolis_resources(&zp, &sd).unwrap();
+        assert_eq!(std::fs::read(sd.join("ultimate/arcropolis/config.json")).unwrap(), b"mine");
+        assert_eq!(std::fs::read(sd.join("ultimate/arcropolis/resources/a.arc")).unwrap(), b"arc");
+        assert!(!sd.join("other").exists());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn patch_npdm_sets_game_tid_and_rejects_other_files() {
+        let dir = test_dir("npdm");
+        let mut b = vec![0u8; 972];
+        b[0x330..0x334].copy_from_slice(b"ACI0");
+        b[0x340..0x348].copy_from_slice(&0x01006A800016E000u64.to_le_bytes());
+        let p = dir.join("main.npdm");
+        std::fs::write(&p, &b).unwrap();
+        patch_npdm_tid(&p, "0100000000010000").unwrap();
+        let out = std::fs::read(&p).unwrap();
+        assert_eq!(&out[0x340..0x348], &0x0100000000010000u64.to_le_bytes());
+        assert_eq!(&out[..0x340], &b[..0x340]);
+        assert_eq!(out.len(), 972);
+        std::fs::write(&p, vec![0u8; 972]).unwrap();
+        assert_eq!(patch_npdm_tid(&p, "0100000000010000"), Err("Pacote do Skyline/ARCropolis em formato inesperado".to_string()));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn skyline_zip(path: &Path, npdm: &[u8]) {
+        use std::io::Write as _;
+        let mut w = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+        let o = zip::write::SimpleFileOptions::default();
+        w.start_file("exefs/subsdk9", o).unwrap();
+        w.write_all(b"sky").unwrap();
+        w.start_file("exefs/main.npdm", o).unwrap();
+        w.write_all(npdm).unwrap();
+        w.finish().unwrap();
+    }
+
+    fn good_npdm() -> Vec<u8> {
+        let mut b = vec![0u8; 972];
+        b[0x330..0x334].copy_from_slice(b"ACI0");
+        b
+    }
+
+    #[test]
+    fn skyline_failed_install_publishes_nothing_and_retry_repairs() {
+        let base = test_dir("sky-retry");
+        let dir = base.join("SD/atmosphere/contents/0100000000010000");
+        let zp = base.join("w1/skyline.zip");
+        std::fs::create_dir_all(zp.parent().unwrap()).unwrap();
+        skyline_zip(&zp, &[0u8; 972]); // NPDM inválido: sem ACI0
+        assert!(skyline_from_zip(&zp, &dir, "0100000000010000").is_err());
+        assert!(!dir.join(SKYLINE_MARKER).exists() && !dir.join(NPDM_MARKER).exists());
+        let zp = base.join("w2/skyline.zip");
+        std::fs::create_dir_all(zp.parent().unwrap()).unwrap();
+        skyline_zip(&zp, &good_npdm());
+        skyline_from_zip(&zp, &dir, "0100000000010000").unwrap();
+        assert_eq!(std::fs::read(dir.join(SKYLINE_MARKER)).unwrap(), b"sky");
+        assert_eq!(&std::fs::read(dir.join(NPDM_MARKER)).unwrap()[0x340..0x348], &0x0100000000010000u64.to_le_bytes());
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn skyline_repairs_only_the_missing_file() {
+        let base = test_dir("sky-partial");
+        let dir = base.join("SD/atmosphere/contents/0100000000010000");
+        let zp = base.join("w/skyline.zip");
+        std::fs::create_dir_all(zp.parent().unwrap()).unwrap();
+        skyline_zip(&zp, &good_npdm());
+        // só o main.npdm sumiu: o subsdk9 do usuário fica intacto
+        std::fs::create_dir_all(dir.join("exefs")).unwrap();
+        std::fs::write(dir.join(SKYLINE_MARKER), b"mine").unwrap();
+        skyline_from_zip(&zp, &dir, "0100000000010000").unwrap();
+        assert_eq!(std::fs::read(dir.join(SKYLINE_MARKER)).unwrap(), b"mine");
+        assert!(dir.join(NPDM_MARKER).is_file());
+        // só o subsdk9 sumiu: o main.npdm do usuário fica intacto
+        std::fs::remove_file(dir.join(SKYLINE_MARKER)).unwrap();
+        std::fs::write(dir.join(NPDM_MARKER), b"usernpdm").unwrap();
+        skyline_from_zip(&zp, &dir, "0100000000010000").unwrap();
+        assert_eq!(std::fs::read(dir.join(SKYLINE_MARKER)).unwrap(), b"sky");
+        assert_eq!(std::fs::read(dir.join(NPDM_MARKER)).unwrap(), b"usernpdm");
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn skyline_plugin_detection() {
+        assert!(is_skyline_plugin("romfs/skyline/plugins/libx.nro"));
+        assert!(is_skyline_plugin("ROMFS\\Skyline\\Plugins\\X.NRO"));
+        assert!(!is_skyline_plugin("romfs/skyline/plugins/config.toml"));
+        assert!(!is_skyline_plugin("romfs/data/x.nro"));
+        let dir = test_dir("plugins");
+        assert!(!has_skyline_plugins(&dir.join("mod")));
+        write_file(&dir, "mod/romfs/skyline/plugins/a.nro");
+        assert!(has_skyline_plugins(&dir.join("mod")));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -586,7 +1311,7 @@ mod tests {
         std::fs::write(&rar, &bytes).unwrap();
         let out = dir.join("x");
         extract(&rar, &out).unwrap();
-        let roots = roots_from_extracted(&out, "60fps");
+        let roots = roots_from_extracted(&out, "60fps", "0100801011C3E000").unwrap();
         assert!(roots
             .iter()
             .any(|r| r.files.iter().any(|(_, d)| d.starts_with("exefs/") || d.starts_with("romfs/"))));
@@ -615,7 +1340,7 @@ mod tests {
                 std::fs::write(&file, resp.bytes().await.unwrap()).unwrap();
                 let out = dir.join("x");
                 let _ = std::fs::remove_dir_all(&out);
-                if extract(&file, &out).is_ok() && !roots_from_extracted(&out, &m.entry.name).is_empty() {
+                if extract(&file, &out).is_ok() && roots_from_extracted(&out, &m.entry.name, "0100F2C0115B6000").is_ok_and(|r| !r.is_empty()) {
                     return true;
                 }
             }
@@ -641,7 +1366,7 @@ mod tests {
         })
         .unwrap();
         assert_eq!(last, m.size);
-        let roots = roots_from_extracted(&dir, &m.name);
+        let roots = roots_from_extracted(&dir, &m.name, m.tid.as_deref().unwrap()).unwrap();
         assert_eq!(roots.len(), 1);
         assert_eq!(roots[0].name, m.name);
         assert!(!roots[0].files.is_empty());
@@ -676,7 +1401,7 @@ pub async fn peek_archive(
     let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
     let tmp = std::env::temp_dir().join(format!("eden-mod-manager-peek-{nanos:x}-{n}"));
     let _ = std::fs::remove_dir_all(&tmp);
-    let r = do_prepare(&app, &m, &tmp).await;
+    let r = do_prepare(&app, &m, &tmp, m.tid.as_deref().unwrap_or("")).await;
     let _ = std::fs::remove_dir_all(&tmp);
     let infos: Vec<RootInfo> = r?
         .iter()

@@ -192,6 +192,15 @@ pub struct Conflict {
 
 /// Arquivos em `romfs/` ou `exefs/` presentes em mais de uma pasta de mod habilitada, agrupados pelo conjunto de pastas.
 pub fn conflicts(game_dir: &Path, disabled: &HashSet<String>) -> Vec<Conflict> {
+    conflicts_for(game_dir, disabled, false)
+}
+
+/// A SD só contém mods ativos; metadados na raiz de cada mod não são recursos do jogo.
+pub fn arcropolis_conflicts(game_dir: &Path) -> Vec<Conflict> {
+    conflicts_for(game_dir, &HashSet::new(), true)
+}
+
+fn conflicts_for(game_dir: &Path, disabled: &HashSet<String>, arcropolis: bool) -> Vec<Conflict> {
     let Ok(rd) = std::fs::read_dir(game_dir) else { return vec![] };
     let mut owners: HashMap<String, Vec<String>> = HashMap::new();
     for e in rd.flatten().filter(|e| e.path().is_dir()) {
@@ -202,7 +211,10 @@ pub fn conflicts(game_dir: &Path, disabled: &HashSet<String>) -> Vec<Conflict> {
         for f in WalkDir::new(e.path()).into_iter().flatten().filter(|f| f.file_type().is_file()) {
             let rel = f.path().strip_prefix(e.path()).unwrap().to_string_lossy().replace('\\', "/");
             let low = rel.to_lowercase();
-            if low.starts_with("romfs/") || low.starts_with("exefs/") {
+            let game_file = if arcropolis {
+                crate::install::ARC_DIRS.contains(&low.split('/').next().unwrap_or(""))
+            } else { low.starts_with("romfs/") || low.starts_with("exefs/") };
+            if game_file {
                 owners.entry(low).or_default().push(folder.clone());
             }
         }
@@ -220,6 +232,33 @@ pub fn conflicts(game_dir: &Path, disabled: &HashSet<String>) -> Vec<Conflict> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn arcropolis_conflicts_compare_game_payload_not_metadata_or_disabled_siblings() {
+        let dir = std::env::temp_dir().join(format!("emm-arc-conflicts-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        for (folder, rel) in [("mods/A", "fighter/snake/model.bin"), ("mods/B", "fighter/snake/model.bin"),
+            ("mods/A", "config.json"), ("mods/B", "config.json"), ("mods/A", "romfs/normal.bin"),
+            (".eden-mod-manager-disabled/C", "fighter/snake/model.bin"),
+            ("ordinary/FPS", "romfs/normal.bin"), ("ordinary/Other", "romfs/normal.bin")] {
+            let path = dir.join(folder).join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"payload").unwrap();
+        }
+        let arc = arcropolis_conflicts(&dir.join("mods"));
+        assert_eq!(arc, vec![Conflict { folders: vec!["A".into(), "B".into()], count: 1,
+            sample: "fighter/snake/model.bin".into() }]);
+        let ordinary = conflicts(&dir.join("ordinary"), &HashSet::new());
+        assert_eq!(ordinary.len(), 1);
+        assert_eq!(ordinary[0].sample, "romfs/normal.bin");
+        assert_eq!(ordinary[0].folders, vec!["FPS".to_string(), "Other".to_string()]);
+        let mut combined = arc;
+        combined.extend(ordinary);
+        assert_eq!(combined.len(), 2);
+        assert!(combined.iter().all(|c| c.count == 1 && c.folders.len() == 2));
+        assert!(conflicts(&dir.join("mods"), &HashSet::new()).is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     const CFG: &str = "[DisabledAddOns]\nsize=1\n1\\title_id\\default=false\n1\\title_id=72080821221203968\n1\\disabled\\size=1\n1\\disabled\\1\\d\\default=false\n1\\disabled\\1\\d=Update (NAND)\n\n\n[Controls]\nenable_raw_input=false\n";
 

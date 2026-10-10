@@ -9,7 +9,7 @@
     api, githubUrl, modPath, SOURCE_LABEL, norm,
     type Catalog, type Conflict, type Game, type InstalledView, type ModEntry, type NszOp, type Prepared, type RomFile,
     type Emu, type RootInfo, type Source, type UpdateCheck, type EmuDir, type StorageInfo,
-    type GbMod, type GbDetail,
+    type GbMod, type GbDetail, type FrameworkStatus,
   } from "$lib/api";
   import { EMU_HINT, EMU_NAME, i18n, locale, setLang, t, trErr, type Lang } from "$lib/i18n.svelte";
 
@@ -31,10 +31,14 @@
   let notice = $state("");
   let busy = $state(false);
   let loadingCatalog = $state(false);
+  let fw = $state<FrameworkStatus | null>(null);
+  const smash = $derived(selected?.tid.toUpperCase() === "01006A800016E000");
+  const fwMissing = $derived(fw ? [!fw.skyline && "Skyline", fw.arcropolis === false && "ARCropolis"].filter(Boolean).join(" + ") : "");
   let progress = $state<{ received: number; total: number | null } | null>(null);
   let prepared = $state<Prepared | null>(null);
   let dlg = $state<HTMLDialogElement>();
   let guide = $state<HTMLDialogElement>();
+  let dependencies = $state<HTMLDialogElement>();
   let upd = $state<HTMLDialogElement>();
   let update = $state<UpdateCheck | null>(null);
   let sett = $state<HTMLDialogElement>();
@@ -103,6 +107,7 @@
     folder: "M3 6h6l2 2h10v11H3z",
     plus: "M12 5v14 M5 12h14",
     chev: "M9 6l6 6-6 6",
+    play: "M7 4l13 8-13 8z",
     help: "M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18z M9.6 9.5a2.5 2.5 0 1 1 3.5 2.3c-.7.4-1.1.9-1.1 1.7 M12 17h.01",
     update: "M12 4v11 M7 10l5 5 5-5 M5 20h14",
     check: "M5 12l5 5 9-10",
@@ -445,8 +450,16 @@
     if (!busy) progress = null;
   }
 
+  /** Detecta o Skyline (e no Smash o ARCropolis) do jogo aberto. yuzu não suporta ARCropolis: no Smash fica `null`. */
+  async function refreshFw() {
+    const tid = selected?.tid;
+    const f = tid && !(smash && emu === "yuzu") ? await api.frameworkStatus(tid).catch(() => null) : null;
+    if (selected?.tid === tid) fw = f;
+  }
+
   async function refreshInstalled() {
     const tid = selected?.tid;
+    void refreshFw();
     installed = tid ? ((await run(() => api.listInstalled(tid))) ?? []) : [];
     const c = tid && installed.length > 1 ? await api.listConflicts(tid).catch(() => []) : [];
     if (selected?.tid === tid) conflicts = c;
@@ -459,8 +472,49 @@
   };
 
   async function toggle(i: InstalledView) {
+    if (busy) return;
+    busy = true;
     await run(() => api.setModEnabled(i.tid, i.folder, !i.enabled));
+    busy = false;
+    progress = null;
     await refreshInstalled();
+  }
+
+  async function installFrameworks() {
+    const tid = selected?.tid;
+    if (busy || !tid) return;
+    busy = true;
+    notice = "";
+    progress = { received: 0, total: null };
+    await run(() => api.installFrameworks(tid));
+    busy = false;
+    progress = null;
+    await refreshFw();
+    if (!error) notice = t(smash ? "dependenciesReady" : "skylineReady");
+  }
+
+  /** Abre o jogo no emulador; se o executável não foi achado sozinho, pede o arquivo uma vez (fica salvo). */
+  async function launchGame() {
+    const g = selected;
+    if (!g || busy) return;
+    notice = "";
+    if (!(await run(() => api.emuExe()))) {
+      const p = await open({ multiple: false, title: t("pickEmuExe", { emu: EMU_NAME[emu] }) });
+      if (typeof p !== "string") return;
+      await run(() => api.setEmuExe(p));
+      if (error) return;
+    }
+    await run(() => api.launchGame(g.tid));
+    // jogo sem TID no nome do arquivo: o usuário aponta o nsp/xci uma vez (fica salvo por jogo)
+    if (error === trErr("Arquivo do jogo não encontrado nas pastas de jogos do emulador")) {
+      const f = await open({ multiple: false, title: t("pickGameFile", { name: g.name ?? g.tid }),
+        filters: [{ name: t("switchGames"), extensions: ["nsp", "xci"] }] });
+      if (typeof f !== "string") { error = ""; return; }
+      await run(() => api.setGameFile(g.tid, f));
+      if (error) return;
+      await run(() => api.launchGame(g.tid));
+    }
+    if (!error) notice = t("launched", { name: g.name ?? g.tid });
   }
 
   async function install(m: ModEntry, only?: string) {
@@ -523,6 +577,7 @@
 
   async function commit(token: string, keys: string[]) {
     const r = await run(() => api.commitInstall(token, keys));
+    progress = null;
     prepared = null;
     busy = false;
     if (r) notice = t(emu === "ryujinx" ? "installedNoticeRyu" : "installedNotice");
@@ -582,6 +637,8 @@
     };
   });
 </script>
+
+<svelte:window onfocus={refreshFw} />
 
 {#snippet modRow(m: ModEntry | GbMod)}
   <div class="row">
@@ -799,10 +856,20 @@
                 {/each}
               </div>
               {#if selected.version}
-                <label class="toggle"><input type="checkbox" bind:checked={onlyMatch} /> {t("onlyMatch")} ({selected.version})</label>
+                <div class="seg" role="group" aria-label={t("onlyMatchTip", { v: selected.version })}>
+                  <button aria-pressed={onlyMatch} title={t("onlyMatchTip", { v: selected.version })} onclick={() => (onlyMatch = !onlyMatch)}>{#if onlyMatch}{@render icon(ICON.check)}{/if}{t("onlyMatch", { v: selected.version })}</button>
+                </div>
               {/if}
             {/if}
           </div>
+          {#if smash || fw?.needed}
+            <div class="warn dependency-notice" class:ok={fw && !fwMissing} role="note">
+              {@render icon(fw && !fwMissing ? ICON.check : ICON.alert)}
+              <p>{fw ? (fwMissing ? t(smash ? "dependenciesMissing" : "skylineMissing", { list: fwMissing }) : t(smash ? "dependenciesReady" : "skylineReady")) : t("dependenciesNotice")}</p>
+              {#if smash}<button onclick={() => { void refreshFw(); openModal(dependencies); }}>{@render icon(ICON.help)}{t("dependencies")}</button>{/if}
+              {#if fw && fwMissing}<button disabled={busy} onclick={installFrameworks}>{t(smash ? "dependenciesInstallNow" : "skylineInstallNow")}</button>{/if}
+            </div>
+          {/if}
         {/if}
         <div class="detail">
           {#if !selected}
@@ -811,6 +878,8 @@
             <div class="head">
               {#if selected.icon}<img class="cover" src={selected.icon} alt="" />{/if}
               <h2>{selected.name ?? selected.tid}</h2>
+              <span class="spacer"></span>
+              <button class="primary" disabled={busy} onclick={launchGame}>{@render icon(ICON.play)}{t("play")}</button>
             </div>
 
             <section class="panel">
@@ -983,6 +1052,38 @@
       {/each}
     </ol>
     <div class="actions"><button class="primary" onclick={() => guide?.close()}>{t("guideDone")}</button></div>
+  </dialog>
+
+  <dialog bind:this={dependencies} class="modal dependencies" aria-labelledby="dependencies-title" tabindex="-1">
+    <h3 id="dependencies-title">{t("dependencies")}</h3>
+    <div class="sbody">
+      <p>{t("dependenciesIntro")}</p>
+      {#if emu !== "eden"}
+        <div class="warn" role="note">{@render icon(ICON.alert)}<p>{t(emu === "yuzu" ? "dependenciesYuzu" : "dependenciesRyujinx")}</p></div>
+      {/if}
+      <ol>
+        <li>
+          <b>{t("dependenciesStep1")}</b>
+          <p>{t("dependenciesAuto")}</p>
+          {#if emu !== "yuzu" && fw}
+            <p class="fw-status" class:ok={!fwMissing}>{fwMissing ? t("dependenciesMissing", { list: fwMissing }) : t("dependenciesReady")}</p>
+            {#if fwMissing}
+              <div class="btns"><button class="primary" disabled={busy} onclick={installFrameworks}>{t("dependenciesInstallNow")}</button></div>
+            {/if}
+          {/if}
+        </li>
+        <li>
+          <b>{t("dependenciesStep3")}</b>
+          <p>{t("dependenciesVerify")}</p>
+        </li>
+        <li>
+          <b>{t("dependenciesStep4")}</b>
+          <p>{t("dependenciesInstall")}</p>
+        </li>
+      </ol>
+      <p class="muted">{t("dependenciesOther")}</p>
+    </div>
+    <div class="actions"><button class="primary" onclick={() => dependencies?.close()}>{t("setClose")}</button></div>
   </dialog>
 
   <dialog bind:this={upd} class="modal" aria-labelledby="upd-title" tabindex="-1">
@@ -1185,7 +1286,7 @@
   .pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   .filters { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 12px 28px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
   .filters .search { flex: 1; min-width: 180px; width: auto; max-width: 320px; }
-  .toggle { font-size: 12px; color: var(--fg-soft); }
+  .seg button :global(.icon) { width: 11px; height: 11px; vertical-align: -1px; margin-right: 4px; }
   .detail { display: flex; flex-direction: column; gap: 20px; overflow-y: auto; flex: 1; min-height: 0; padding: 22px 28px 32px; }
   .detail h2 { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.15; text-wrap: balance; }
   .detail .panel-head { color: var(--fg); }
@@ -1231,6 +1332,13 @@
   .warn { display: flex; gap: 10px; align-items: flex-start; margin: 14px 14px 0; padding: 10px 12px; border-radius: 10px; background: rgb(245 166 35 / 0.12); border: 1px solid rgb(245 166 35 / 0.45); font-size: 13px; line-height: 1.45; }
   .warn p { margin: 0; }
   .warn :global(.icon), .gbm-warn :global(.icon) { flex-shrink: 0; width: 16px; height: 16px; margin-top: 1px; color: #e09a1a; }
+  .dependency-notice { flex-shrink: 0; flex-wrap: wrap; align-items: center; margin: 10px 28px 0; }
+  .dependency-notice p { flex: 1 1 240px; min-width: 0; }
+  .dependency-notice button { white-space: normal; text-align: left; }
+  .dependency-notice.ok { background: var(--ok-bg); border-color: var(--ok); }
+  .dependency-notice.ok :global(.icon) { color: var(--ok); }
+  .fw-status { color: var(--muted); }
+  .fw-status.ok { color: var(--ok); }
   .gbm-warn { display: flex; gap: 8px; align-items: flex-start; margin: 0 0 12px; font-size: 12px; line-height: 1.4; color: var(--muted); }
   .panel-head .seg button { padding: 2px 10px; }
   .info { flex: 1; min-width: 0; }
@@ -1319,6 +1427,15 @@
   .settings { width: min(680px, 92vw); max-height: 86vh; }
   .modal:focus-visible { outline: none; }
   .sbody { overflow-y: auto; display: flex; flex-direction: column; margin: 8px -22px 16px; padding: 0 22px; }
+  .dependencies { width: min(680px, calc(100vw - 64px)); }
+  .dependencies .sbody { min-height: 0; line-height: 1.45; overflow-wrap: anywhere; }
+  .dependencies .sbody > p { margin: 6px 0 12px; }
+  .dependencies .warn { margin: 0 0 12px; }
+  .dependencies ol { margin: 0 0 12px; padding-left: 24px; }
+  .dependencies li { margin-bottom: 16px; }
+  .dependencies li p { margin: 6px 0 10px; }
+  .dependencies .btns button { white-space: normal; text-align: left; }
+  .dependencies > h3, .dependencies > .actions { flex-shrink: 0; }
   .srow { display: grid; grid-template-columns: 150px 1fr; gap: 16px; padding: 14px 0; border-bottom: 1px solid var(--border-soft); }
   .srow:last-child { border-bottom: 0; }
   .srow h4 { margin: 0; padding-top: 4px; font-size: 13px; font-weight: 500; color: var(--fg-soft); }

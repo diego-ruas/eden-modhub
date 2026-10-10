@@ -26,6 +26,10 @@ Optional built-in NSZ compressor. Windows, Linux and macOS.
 </p>
 
 <p align="center">
+  <img src="docs/screenshots/dependencies.png" alt="External dependencies guide for Smash Ultimate mods using Skyline and ARCropolis" width="720" />
+</p>
+
+<p align="center">
   <img src="docs/screenshots/gamebanana-popup.png" alt="GameBanana mod details popup" width="720" />
 </p>
 
@@ -61,7 +65,8 @@ Optional built-in NSZ compressor. Windows, Linux and macOS.
 - **Your games, with cover art.** Reads the emulator's own game list and covers, and fetches missing ones.
 - **Four sources in one list.** Official database, TheBoy181, the Switch Mods Wiki Archive and a PT-BR translation pack, merged and de-duplicated.
 - **GameBanana tab.** A separate tab lists user-made mods for the selected game from [GameBanana](https://gamebanana.com) as cards with a details popup. They are third-party content, not part of the repository and not reviewed by this app, which only downloads the file from there and installs it.
-- **Filters that cut the noise.** Search by name, filter by source, or show only mods matching your installed game version.
+- **Filters that cut the noise.** Search by name, filter by source, or use the **Only `<version>`** button to hide mods made for a different game version (mods without a version stay visible).
+- **Play from the app.** The **Play** button next to a game's name starts it in the active emulator (`-g <file>` on Eden/yuzu, the file as argument on Ryujinx). The app finds the emulator executable by itself (portable folder, common install folders, `PATH`); if it can't, it asks for the file once and remembers it. It finds the game's `.nsp`/`.xci` by the title ID in the file name; if your file has no title ID in its name (e.g. `Mario.xci`), it asks you to pick the file once and remembers it for that game. Compressed `.nsz`/`.xcz` must be decompressed first.
 - **Safe installs.** Pick which variants of a package to install (resolutions, FPS, etc.), enable or disable them without deleting (written to the emulator config, so do it with the emulator closed), update when the catalog has a newer version, see which mods contain the same `romfs`/`exefs` files, and remove them with one click.
 - **Bring your own mod.** The **+** button in the Installed panel takes a `.zip`, `.7z` or `.rar` you downloaded yourself and installs it with the same variant picker.
 - **Optional NSZ compressor.** Compress NSP/XCI and decompress NSZ/XCZ, with progress and verification. The tool is downloaded only on first use.
@@ -98,6 +103,60 @@ A short in-app guide opens on first launch. Click the app icon at the top left f
 ### Portable mode (Windows)
 
 Keep a file named `portable` next to `EdenModManager.exe` and the app stores its settings, cache and tools in a `data/` folder beside it. Remove the file to go back to the regular user profile.
+
+### Super Smash Bros. Ultimate — ARCropolis
+
+**English**
+
+ARCropolis archives from GameBanana or the **+** button use the same installer and Installed panel. Support is limited to Super Smash Bros. Ultimate on Eden and Ryujinx; yuzu is not supported for ARCropolis.
+
+Selecting Smash Ultimate shows a persistent notice on both Repository and GameBanana tabs: **some** mods need Skyline + ARCropolis, which the app installs automatically. **External dependencies** opens a guide with the install button, the verified paths and compatibility warnings.
+
+Other games' mods may need their own loaders; check each mod's page.
+
+These mods go to the emulated SD card's `ultimate/mods/<mod>` folder, not the emulator's ordinary mod folder. Default SD roots are `<emulator data folder>/sdmc` on Eden and `<emulator data folder>/sdcard` on Ryujinx.
+
+The app downloads the latest [Skyline](https://github.com/skyline-dev/skyline/releases) (`skyline-dev/skyline`) and [ARCropolis](https://github.com/Raytwo/ARCropolis/releases) (`Raytwo/ARCropolis`) releases and installs whatever is missing on the emulated SD card when you install or enable an ARCropolis mod, or with the **Install Skyline + ARCropolis** button. Files already present are not replaced. The app checks for these files relative to the emulated SD root:
+
+```text
+atmosphere/contents/01006A800016E000/exefs/subsdk9
+atmosphere/contents/01006A800016E000/romfs/skyline/plugins/libarcropolis.nro
+```
+
+See also [Eden's setup instructions](https://github.com/eden-emulator/mirror/blob/master/docs/user/Mods.md). The Smash banner and the guide show whether Skyline and ARCropolis are already installed.
+
+Other games: when an installed mod ships Skyline plugins (`romfs/skyline/plugins/*.nro`), the app installs Skyline for that game automatically (with `main.npdm` adjusted to the game's title ID), shows its state in a banner, and reinstalls it if you enable the mod and the files are gone.
+
+Close the game before enabling, disabling or removing mods. Disabling moves managed files to `ultimate/.eden-mod-manager-disabled/<mod>`, outside ARCropolis's scanned `ultimate/mods` tree; enabling moves them back.
+
+On first discovery, you may also need to enable the mod in [ARCropolis's in-game Mod Manager](https://github.com/Raytwo/ARCropolis/wiki/Mod-manager-(Features)). The app does not change ARCropolis's workspace selection.
+
+**Português**
+
+Arquivos ARCropolis do GameBanana ou do botão **+** usam o mesmo instalador e painel de instalados. O suporte é limitado a Super Smash Bros. Ultimate no Eden e Ryujinx; yuzu não é compatível com ARCropolis.
+
+Ao selecionar Smash Ultimate, um aviso permanece nas abas Repositório e GameBanana: **alguns** mods exigem Skyline + ARCropolis, que o app instala automaticamente.
+
+**Dependências externas** abre um guia com o botão de instalação, os caminhos verificados e avisos de compatibilidade.
+
+Mods de outros jogos podem exigir loaders próprios; consulte a página de cada mod.
+
+Esses mods vão para `ultimate/mods/<mod>` na SD emulada, não para a pasta comum de mods do emulador. A raiz padrão da SD é `<pasta de dados do emulador>/sdmc` no Eden e `<pasta de dados do emulador>/sdcard` no Ryujinx.
+
+O app baixa as versões mais recentes de [Skyline](https://github.com/skyline-dev/skyline/releases) (`skyline-dev/skyline`) e [ARCropolis](https://github.com/Raytwo/ARCropolis/releases) (`Raytwo/ARCropolis`) e instala o que faltar na SD emulada ao instalar ou ativar um mod ARCropolis, ou pelo botão **Instalar Skyline + ARCropolis**. Arquivos já presentes não são substituídos. O app verifica estes dois arquivos, relativos à raiz da SD emulada:
+
+```text
+atmosphere/contents/01006A800016E000/exefs/subsdk9
+atmosphere/contents/01006A800016E000/romfs/skyline/plugins/libarcropolis.nro
+```
+
+Consulte também as [instruções do Eden](https://github.com/eden-emulator/mirror/blob/master/docs/user/Mods.md). O banner do Smash e o guia mostram se Skyline e ARCropolis já estão instalados.
+
+Outros jogos: se um mod instalado traz plugins do Skyline (`romfs/skyline/plugins/*.nro`), o app instala o Skyline desse jogo automaticamente (com o `main.npdm` ajustado ao TID do jogo), mostra o estado em um banner e o reinstala se você ativar o mod e os arquivos tiverem sumido.
+
+Feche o jogo antes de ativar, desativar ou remover mods. Desativar move os arquivos gerenciados para `ultimate/.eden-mod-manager-disabled/<mod>`, fora de `ultimate/mods`, que o ARCropolis examina; ativar os move de volta.
+
+Na primeira descoberta, pode ser necessário ativar o mod também no [gerenciador dentro do jogo](https://github.com/Raytwo/ARCropolis/wiki/Mod-manager-(Features)). O app não altera a seleção do workspace do ARCropolis.
 
 ## NSZ compressor
 
