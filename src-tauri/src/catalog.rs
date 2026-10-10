@@ -185,18 +185,32 @@ pub fn mod_root(path: &str) -> Option<(String, String)> {
         // exefs/romfs/cheats em minúsculas: o emulador só os acha assim em sistemas de arquivos que diferenciam caixa (Linux)
         let rest = segs[i + 1..].iter().copied();
         let dest = std::iter::once(segs[i].to_lowercase()).chain(rest.map(str::to_string)).collect::<Vec<_>>().join("/");
-        return Some((segs[..i].join("/"), dest));
+        if safe_mod_destination(&dest) {
+            return Some((segs[..i].join("/"), dest));
+        }
     }
     if let Some(i) = segs.iter().position(|s| s.to_lowercase() == "exefs_patches") {
         if len >= 3 && i <= len - 3 {
-            return Some((segs[..i + 2].join("/"), format!("exefs/{}", segs[len - 1])));
+            let dest = format!("exefs/{}", segs[len - 1]);
+            if safe_mod_destination(&dest) {
+                return Some((segs[..i + 2].join("/"), dest));
+            }
         }
     }
     let ext = ext_of(path);
     if ext == "pchtxt" || ext == "ips" {
-        return Some((segs[..len - 1].join("/"), format!("exefs/{}", segs[len - 1])));
+        let dest = format!("exefs/{}", segs[len - 1]);
+        if safe_mod_destination(&dest) {
+            return Some((segs[..len - 1].join("/"), dest));
+        }
     }
     None
+}
+
+fn safe_mod_destination(dest: &str) -> bool {
+    !dest.contains('\\')
+        && !dest.contains(':')
+        && dest.split('/').all(|part| !matches!(part, "" | "." | ".."))
 }
 
 pub fn display_name(root: &str, fallback: &str) -> String {
@@ -478,6 +492,19 @@ mod tests {
         );
         assert_eq!(mr("Titles/01006FE013472000/credits.txt"), None);
     }
+    #[test]
+    fn mod_root_rejects_unsafe_destinations() {
+        for path in [
+            r"Game/romfs/safe\..\..\..\outside.bin",
+            "Game/romfs/../outside.bin",
+            "Game/romfs/file:stream.bin",
+            r"Game/exefs_patches/patch/file\..\..\outside.ips",
+            r"Game/safe\..\..\outside.pchtxt",
+        ] {
+            assert_eq!(mr(path), None, "{path}");
+        }
+    }
+
 
     #[test]
     fn display_names() {
