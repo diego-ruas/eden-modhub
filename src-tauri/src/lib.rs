@@ -237,12 +237,12 @@ async fn get_catalog(app: AppHandle, state: State<'_, CatalogState>, force: bool
 /// Mods do GameBanana para um jogo; entram no catálogo em memória (substituindo os anteriores do jogo)
 /// para que `prepare_install` os encontre.
 #[tauri::command]
-async fn gamebanana_mods(app: AppHandle, state: State<'_, CatalogState>, tid: String, name: String, all: bool, fresh: bool) -> Result<gamebanana::GbList, String> {
+async fn gamebanana_mods(app: AppHandle, state: State<'_, CatalogState>, tid: String, name: String, all: bool, fresh: bool, request_id: u64) -> Result<gamebanana::GbList, String> {
     emu::check_tid(&tid)?;
     // só o pedido mais recente grava no catálogo: um modo antigo e lento não sobrescreve o novo
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-    let list = gamebanana::list(Some(&app), &tid, &name, all, fresh).await?;
+    let list = gamebanana::list_for_request(Some(&app), &tid, &name, all, fresh, request_id).await?;
     if SEQ.load(std::sync::atomic::Ordering::SeqCst) == n {
         if let Some(c) = state.0.lock().as_mut() {
             c.mods.retain(|m| m.source != catalog::Source::Gamebanana || m.tid.as_deref() != Some(&tid));

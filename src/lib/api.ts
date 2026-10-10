@@ -19,7 +19,7 @@ export const SOURCE_LABEL: Record<Source, string> = {
 
 export type GbMod = ModEntry & { thumb: string | null; likes: number; views: number; featured: boolean };
 export type GbList = { found: boolean; mods: GbMod[] };
-export type GbMore = { tid: string; all: boolean; mods: GbMod[]; complete: boolean };
+export type GbMore = { tid: string; all: boolean; requestId: number; mods: GbMod[]; complete: boolean };
 export type GbDetail = { text: string; image: string | null; submitter: string | null; version: string | null; downloads: number; size: number; updated: number };
 export type FrameworkStatus = { needed: boolean; skyline: boolean; arcropolis: boolean | null };
 export type ModFile = { src: string; dest: string };
@@ -96,8 +96,8 @@ export const api = {
   setEmulator: (kind: Emu) => invoke<void>("set_emulator", { kind }),
   setEmuDir: (kind: Emu, path: string) => invoke<void>("set_emu_dir", { kind, path }),
   getCatalog: (force: boolean) => invoke<Catalog>("get_catalog", { force }),
-  gamebananaMods: (tid: string, name: string, all: boolean, fresh = false) =>
-    invoke<GbList>("gamebanana_mods", { tid, name, all, fresh }),
+  gamebananaMods: (tid: string, name: string, all: boolean, requestId: number, fresh = false) =>
+    invoke<GbList>("gamebanana_mods", { tid, name, all, fresh, requestId }),
   gamebananaDetail: (id: number) => invoke<GbDetail>("gamebanana_detail", { id }),
   listGames: () => invoke<Game[]>("list_games"),
   gameCover: (tid: string) => invoke<string | null>("game_cover", { tid }),
