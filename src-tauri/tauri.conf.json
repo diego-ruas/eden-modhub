@@ -13,8 +13,8 @@
     "windows": [
       {
         "title": "Eden Mod Manager",
-        "width": 1360,
-        "height": 840,
+        "width": 1440,
+        "height": 880,
         "center": true,
         "minWidth": 900,
         "minHeight": 600,
