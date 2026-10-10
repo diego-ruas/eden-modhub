@@ -297,9 +297,8 @@ fn to_gb_mods(recs: BTreeMap<u64, Rec>, tid: &str) -> Vec<GbMod> {
     mods
 }
 
-/// Mods do jogo `tid`/`name`. `all` = tudo que o site tem (com entrega progressiva); senão só os curados.
-/// O primeiro lote (páginas 1..=BATCH) é retornado imediatamente; o restante continua em segundo plano
-/// emitindo eventos `gamebanana-more` e atualizando o cache para não bloquear a interface.
+/// Mods do jogo `tid`/`name`. `all` = todos (com entrega progressiva); senão, só os curados.
+/// No modo "Todos", a primeira página retorna imediatamente; as demais continuam em segundo plano.
 pub async fn list(
     app: Option<&AppHandle>,
     tid: &str,
@@ -329,8 +328,8 @@ pub async fn list(
         return Ok(GbList { found: true, mods });
     }
 
-    // Modo "Todos": busca e entrega o primeiro lote imediatamente
-    let (mut all_recs, complete) = fetch_chunk(game, false, 0, 1, BATCH).await?;
+    // Mostra a primeira página (até 50 mods) sem esperar pelos próximos lotes.
+    let (mut all_recs, complete) = fetch_chunk(game, false, 0, 1, 1).await?;
     let initial_mods = to_gb_mods(all_recs.clone(), tid);
     CACHE.lock().insert((tid.to_string(), true), CacheEntry {
         at: Instant::now(),
@@ -343,7 +342,7 @@ pub async fn list(
         let app_handle = app.cloned().unwrap();
         let tid_owned = tid.to_string();
         tauri::async_runtime::spawn(async move {
-            let mut page = BATCH + 1;
+            let mut page = 2;
             while page <= MAX_PAGES {
                 let count = BATCH.min(MAX_PAGES - page + 1);
                 let Ok((chunk, is_complete)) = fetch_chunk(game, false, 0, page, count).await else { break };
