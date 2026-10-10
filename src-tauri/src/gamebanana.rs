@@ -334,6 +334,17 @@ pub async fn list(
     Ok(GbList { found: true, mods: initial_mods })
 }
 
+/// Pré-carrega em segundo plano os mods curados de todos os jogos do usuário.
+/// Executa sequencialmente para não sobrecarregar a rede; jogos já em cache são pulados imediatamente.
+pub async fn prefetch_curated(games: Vec<(String, String)>) {
+    for (tid, name) in games {
+        if cached(&tid, false).is_some() {
+            continue;
+        }
+        let _ = list(None, &tid, &name, false, false).await;
+    }
+}
+
 /// Dados da página do mod para o popup.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -481,6 +492,17 @@ mod tests {
             let (url, ext) = download_url(&top.entry.files[0].src).await.unwrap();
             println!("{} {url} {ext}", top.entry.name);
             assert!(url.starts_with("https://gamebanana.com/dl/"));
+        });
+    }
+
+    #[test]
+    fn prefetch_curated_skips_cached() {
+        tauri::async_runtime::block_on(async {
+            let tid = "0100TEST00000000";
+            CACHE.lock().insert((tid.to_string(), false), (Instant::now(), Vec::new()));
+            let t0 = Instant::now();
+            prefetch_curated(vec![(tid.to_string(), "Nonexistent Game".into())]).await;
+            assert!(t0.elapsed() < Duration::from_millis(50));
         });
     }
 

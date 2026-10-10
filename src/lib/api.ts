@@ -129,4 +129,6 @@ export const api = {
   nszCanVerify: () => invoke<boolean>("nsz_can_verify"),
   peekArchive: (modId: string) => invoke<RootInfo[]>("peek_archive", { modId }),
   registerGameUpdate: (tid: string) => invoke<string | null>("register_game_update", { tid }),
+  prefetchGamebanana: (games: { tid: string; name: string | null }[]) =>
+    invoke<void>("prefetch_gamebanana", { games }),
 };

@@ -347,6 +347,7 @@
     games = (await run(api.listGames)) ?? [];
     if (selected && !games.some((g) => g.tid === selected!.tid)) selected = null;
     void loadCovers();
+    if (games.length) void api.prefetchGamebanana(games.map((g) => ({ tid: g.tid, name: g.name }))).catch(() => {});
   }
 
   async function loadCatalog(force: boolean) {

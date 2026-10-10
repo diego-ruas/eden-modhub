@@ -256,6 +256,23 @@ async fn gamebanana_mods(app: AppHandle, state: State<'_, CatalogState>, tid: St
 async fn gamebanana_detail(id: u64) -> Result<gamebanana::GbDetail, String> {
     gamebanana::detail(id).await
 }
+#[derive(Deserialize)]
+struct PrefetchGame {
+    tid: String,
+    name: Option<String>,
+}
+
+#[tauri::command]
+fn prefetch_gamebanana(games: Vec<PrefetchGame>) {
+    tauri::async_runtime::spawn(async move {
+        let pairs: Vec<(String, String)> = games
+            .into_iter()
+            .filter_map(|g| g.name.map(|n| (g.tid, n)))
+            .collect();
+        gamebanana::prefetch_curated(pairs).await;
+    });
+}
+
 
 #[tauri::command]
 fn list_games(app: AppHandle, state: State<'_, CatalogState>) -> Result<Vec<emu::Game>, String> {
@@ -357,6 +374,7 @@ pub fn run() {
             prefs::remove_tools,
             get_emu_dirs,
             register_game_update,
+            prefetch_gamebanana,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
