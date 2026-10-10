@@ -39,6 +39,8 @@ struct Rec {
     likes: u32,
     #[serde(rename = "_bWasFeatured", default)]
     featured: bool,
+    #[serde(rename = "_nViewCount", default)]
+    views: u32,
     // Value: APIs PHP mandam `[]` no lugar de objeto vazio
     #[serde(rename = "_aPreviewMedia", default)]
     media: serde_json::Value,
@@ -117,6 +119,7 @@ pub struct GbMod {
     pub entry: ModEntry,
     pub thumb: Option<String>,
     pub likes: u32,
+    pub views: u32,
     pub featured: bool,
 }
 
@@ -126,8 +129,13 @@ pub struct GbList {
     pub mods: Vec<GbMod>,
 }
 
-fn thumb(media: &serde_json::Value) -> Option<String> {
-    media["_aImages"].as_array()?.iter().find_map(|i| Some(format!("{}/{}", i["_sBaseUrl"].as_str()?, i["_sFile100"].as_str()?)))
+/// Primeira imagem do mod com algum dos tamanhos `keys` (em ordem de preferência);
+/// _sFile530/_sFile800 só existem na primeira imagem, as demais trazem apenas _sFile100.
+fn image(media: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    media["_aImages"].as_array()?.iter().find_map(|i| {
+        let file = keys.iter().find_map(|k| i[*k].as_str())?;
+        Some(format!("{}/{}", i["_sBaseUrl"].as_str()?, file))
+    })
 }
 
 /// Mods do jogo `tid`/`name`. `all` = tudo que o site tem; senão só os curados.
@@ -144,8 +152,9 @@ pub async fn list(tid: &str, name: &str, all: bool) -> Result<GbList, String> {
         .into_values()
         .filter(|r| r.has_files && !r.obsolete)
         .map(|r| GbMod {
-            thumb: thumb(&r.media),
+            thumb: image(&r.media, &["_sFile530", "_sFile100"]),
             likes: r.likes,
+            views: r.views,
             featured: r.featured,
             entry: ModEntry {
                 id: format!("{}{}", Source::Gamebanana.id_prefix(), r.id),
@@ -163,6 +172,34 @@ pub async fn list(tid: &str, name: &str, all: bool) -> Result<GbList, String> {
         .collect();
     mods.sort_by(|a, b| b.likes.cmp(&a.likes).then_with(|| a.entry.name.cmp(&b.entry.name)));
     Ok(GbList { found: true, mods })
+}
+
+/// Dados da página do mod para o popup.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GbDetail {
+    pub text: String,
+    pub image: Option<String>,
+    pub submitter: Option<String>,
+    pub version: Option<String>,
+    pub downloads: u64,
+    pub size: u64,
+    pub updated: u64,
+}
+
+pub async fn detail(id: u64) -> Result<GbDetail, String> {
+    let props = "_sText,_sVersion,_tsDateUpdated,_tsDateModified,_nDownloadCount,_aSubmitter,_aPreviewMedia,_aFiles";
+    let v: serde_json::Value = get(&format!("Mod/{id}"), &[("_csvProperties", props.into())]).await?;
+    let latest = v["_aFiles"].as_array().and_then(|f| f.iter().max_by_key(|f| f["_tsDateAdded"].as_u64().unwrap_or(0)));
+    Ok(GbDetail {
+        text: v["_sText"].as_str().unwrap_or_default().to_string(),
+        image: image(&v["_aPreviewMedia"], &["_sFile800", "_sFile530", "_sFile100"]),
+        submitter: v["_aSubmitter"]["_sName"].as_str().map(str::to_string),
+        version: v["_sVersion"].as_str().filter(|s| !s.is_empty()).map(str::to_string),
+        downloads: v["_nDownloadCount"].as_u64().unwrap_or(0),
+        size: latest.and_then(|f| f["_nFilesize"].as_u64()).unwrap_or(0),
+        updated: v["_tsDateUpdated"].as_u64().or_else(|| v["_tsDateModified"].as_u64()).unwrap_or(0),
+    })
 }
 
 #[derive(Deserialize)]
@@ -209,8 +246,12 @@ mod tests {
         assert!(p.meta.complete);
         assert_eq!((p.records[0].likes, p.records[0].featured, p.records[0].has_files), (7, true, true));
         assert_eq!((p.records[1].likes, p.records[1].has_files, p.records[1].obsolete), (0, false, false));
-        assert_eq!(thumb(&p.records[0].media), Some("https://x/ss/100-a.jpg".into()));
-        assert_eq!(thumb(&p.records[1].media), None);
+        let keys = ["_sFile530", "_sFile100"];
+        assert_eq!(image(&p.records[0].media, &keys), Some("https://x/ss/100-a.jpg".into()));
+        assert_eq!(image(&p.records[1].media, &keys), None);
+        // tamanho maior tem preferência quando existe
+        let m = serde_json::json!({"_aImages": [{"_sBaseUrl": "https://x", "_sFile100": "s.jpg", "_sFile530": "b.jpg"}]});
+        assert_eq!(image(&m, &keys), Some("https://x/b.jpg".into()));
     }
 
     /// Zelda TotK: curados vêm com id, e o mod mais curtido resolve um download.

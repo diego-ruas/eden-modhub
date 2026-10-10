@@ -17,8 +17,9 @@ export const SOURCE_LABEL: Record<Source, string> = {
   gamebanana: SOURCES.gamebanana.label,
 };
 
-export type GbMod = ModEntry & { thumb: string | null; likes: number; featured: boolean };
+export type GbMod = ModEntry & { thumb: string | null; likes: number; views: number; featured: boolean };
 export type GbList = { found: boolean; mods: GbMod[] };
+export type GbDetail = { text: string; image: string | null; submitter: string | null; version: string | null; downloads: number; size: number; updated: number };
 export type ModFile = { src: string; dest: string };
 export type ModEntry = {
   id: string;
@@ -86,6 +87,7 @@ export const api = {
   getCatalog: (force: boolean) => invoke<Catalog>("get_catalog", { force }),
   gamebananaMods: (tid: string, name: string, all: boolean) =>
     invoke<GbList>("gamebanana_mods", { tid, name, all }),
+  gamebananaDetail: (id: number) => invoke<GbDetail>("gamebanana_detail", { id }),
   listGames: () => invoke<Game[]>("list_games"),
   gameCover: (tid: string) => invoke<string | null>("game_cover", { tid }),
   listInstalled: (tid: string) => invoke<InstalledView[]>("list_installed", { tid }),
