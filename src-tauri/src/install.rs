@@ -601,7 +601,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let found = tauri::async_runtime::block_on(async {
-            let mods = crate::gamebanana::list("0100F2C0115B6000", "The Legend of Zelda: Tears of the Kingdom", false)
+            let mods = crate::gamebanana::list("0100F2C0115B6000", "The Legend of Zelda: Tears of the Kingdom", false, false)
                 .await
                 .unwrap();
             for m in mods.mods.iter().take(8) {
@@ -670,8 +670,11 @@ pub async fn peek_archive(
         .as_ref()
         .and_then(|c| c.mods.iter().find(|m| m.id == mod_id).cloned())
         .ok_or("Mod não encontrado no catálogo")?;
+    // contador no nome: leituras em paralelo podem cair no mesmo nanossegundo
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
-    let tmp = std::env::temp_dir().join(format!("eden-mod-manager-peek-{nanos:x}"));
+    let tmp = std::env::temp_dir().join(format!("eden-mod-manager-peek-{nanos:x}-{n}"));
     let _ = std::fs::remove_dir_all(&tmp);
     let r = do_prepare(&app, &m, &tmp).await;
     let _ = std::fs::remove_dir_all(&tmp);

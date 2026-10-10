@@ -85,8 +85,8 @@ export const api = {
   setEmulator: (kind: Emu) => invoke<void>("set_emulator", { kind }),
   setEmuDir: (kind: Emu, path: string) => invoke<void>("set_emu_dir", { kind, path }),
   getCatalog: (force: boolean) => invoke<Catalog>("get_catalog", { force }),
-  gamebananaMods: (tid: string, name: string, all: boolean) =>
-    invoke<GbList>("gamebanana_mods", { tid, name, all }),
+  gamebananaMods: (tid: string, name: string, all: boolean, fresh = false) =>
+    invoke<GbList>("gamebanana_mods", { tid, name, all, fresh }),
   gamebananaDetail: (id: number) => invoke<GbDetail>("gamebanana_detail", { id }),
   listGames: () => invoke<Game[]>("list_games"),
   gameCover: (tid: string) => invoke<string | null>("game_cover", { tid }),
