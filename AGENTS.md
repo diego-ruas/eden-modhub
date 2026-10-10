@@ -47,6 +47,7 @@ Run `npm run check` and `cargo test` after code changes. Shell is bash on Window
 - Code comments are in Portuguese; the README and `AGENTS.md` are in English.
 - **`Dir::Cache` is not a private folder.** On Windows it is `%LOCALAPPDATA%\<identifier>`, which also holds the WebView2 profile (`EBWebView`, in use while the app runs). Delete only what the app writes there (`catalog.json`, `covers/`), as `prefs.rs` does; never `remove_dir_all` the whole directory.
 - **UI preferences** (`lang`, `mica`, `autoUpdate`, `guideSeen`) live in `localStorage`, not in `Settings`. The app icon at the top of the rail opens a native `popover` menu (Settings, Guide, Check for updates); Settings is a `<dialog>`.
+- **Screenshots and README follow the UI.** Any change that alters what a screen looks like (layout, new tab or dialog, copy, window size) must refresh the affected `docs/screenshots/*.png` and the README text in the same PR. Capture at the default window size (1360x840), in English, with the user name masked as `user`, via the WebView2 CDP route (see Testing notes); uninstall anything installed for the shot and clear the scratch data afterwards.
 
 ## Portable mode (Windows)
 
