@@ -568,5 +568,40 @@ mod tests {
         // Agora pode derivar com segurança
         assert!(cached(tid, false).is_some());
     }
+    #[test]
+    fn resolves_switch_variant_when_gamebanana_adds_platform_suffix() {
+        let games = vec![
+            GameRec {
+                id: 5866,
+                name: "The Legend of Zelda: Breath of the Wild (WiiU)".into(),
+            },
+            GameRec {
+                id: 6386,
+                name: "The Legend of Zelda: Breath of the Wild (Switch)".into(),
+            },
+        ];
+        assert_eq!(
+            match_game(&games, "The Legend of Zelda: Breath of the Wild"),
+            Some(6386)
+        );
+    }
+
+    #[test]
+    fn exact_game_name_precedes_platform_variant() {
+        let games = vec![
+            GameRec {
+                id: 1,
+                name: "The Legend of Zelda: Breath of the Wild (Switch)".into(),
+            },
+            GameRec {
+                id: 2,
+                name: "The Legend of Zelda: Breath of the Wild".into(),
+            },
+        ];
+        assert_eq!(
+            match_game(&games, "The Legend of Zelda: Breath of the Wild"),
+            Some(2)
+        );
+    }
 
 }
