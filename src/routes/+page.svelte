@@ -48,6 +48,8 @@
   let autoUpdate = $state(localStorage.getItem("autoUpdate") !== "off");
   let gbAll = $state(localStorage.getItem("gbAll") === "on");
   let gb = $state<{ tid: string; status: "loading" | "ok" | "notfound" | "error"; mods: GbMod[]; error: string } | null>(null);
+  let gbSort = $state<"likes" | "newest" | "views" | "name">("likes");
+  let gbFeaturedOnly = $state(false);
   let gbShown = $state(50);
   let gbDlg = $state<HTMLDialogElement>();
   let gbOpen = $state<GbMod | null>(null);
@@ -264,8 +266,39 @@
       return k && (k.includes(g) || g.includes(k));
     });
   });
-  // Busca global (outros jogos): só com texto digitado; versão do jogo atual não se aplica.
-  const gbList = $derived(gb && selected && gb.tid === selected.tid ? gb.mods.filter((m) => !q || m.name.toLowerCase().includes(q)) : []);
+  // Busca e ordenação do GameBanana: palavras-chave, ID, destaque e ordenação.
+  const gbList = $derived.by(() => {
+    if (!gb || !selected || gb.tid !== selected.tid || gb.status !== "ok") return [];
+    const query = q.trim().toLowerCase();
+    const terms = query ? query.split(/\s+/).filter(Boolean) : [];
+
+    const filtered = gb.mods.filter((m) => {
+      if (gbFeaturedOnly && !m.featured) return false;
+      if (!terms.length) return true;
+      const name = m.name.toLowerCase();
+      const id = m.id.toLowerCase();
+      return terms.every((term) => name.includes(term) || id.includes(term));
+    });
+
+    switch (gbSort) {
+      case "likes":
+        filtered.sort((a, b) => b.likes - a.likes || a.name.localeCompare(b.name));
+        break;
+      case "views":
+        filtered.sort((a, b) => b.views - a.views || b.likes - a.likes);
+        break;
+      case "newest": {
+        const idNum = (id: string) => parseInt(id.replace(/\D/g, ""), 10) || 0;
+        filtered.sort((a, b) => idNum(b.id) - idNum(a.id));
+        break;
+      }
+      case "name":
+        filtered.sort((a, b) => a.name.localeCompare(b.name));
+        break;
+    }
+
+    return filtered;
+  });
   const searchHits = $derived.by(() => {
     if (!q || !catalog) return [];
     const listed = new Set([...available, ...possible].map((m) => m.id));
@@ -861,6 +894,16 @@
                   <button aria-pressed={onlyMatch} title={t("onlyMatchTip", { v: selected.version })} onclick={() => (onlyMatch = !onlyMatch)}>{#if onlyMatch}{@render icon(ICON.check)}{/if}{t("onlyMatch", { v: selected.version })}</button>
                 </div>
               {/if}
+            {:else if view === "gb"}
+              <div class="seg" role="group" aria-label={t("gbMode")}>
+                <button aria-pressed={gbSort === "likes"} onclick={() => (gbSort = "likes")}>{t("gbSortLikes")}</button>
+                <button aria-pressed={gbSort === "newest"} onclick={() => (gbSort = "newest")}>{t("gbSortNewest")}</button>
+                <button aria-pressed={gbSort === "views"} onclick={() => (gbSort = "views")}>{t("gbSortViews")}</button>
+                <button aria-pressed={gbSort === "name"} onclick={() => (gbSort = "name")}>{t("gbSortName")}</button>
+              </div>
+              <div class="seg" role="group" aria-label={t("gbFeaturedOnly")}>
+                <button aria-pressed={gbFeaturedOnly} title={t("gbFeaturedOnlyTip")} onclick={() => (gbFeaturedOnly = !gbFeaturedOnly)}>{#if gbFeaturedOnly}{@render icon(ICON.check)}{/if}★ {t("gbFeaturedOnly")}</button>
+              </div>
             {/if}
           </div>
           {#if smash || fw?.needed}
