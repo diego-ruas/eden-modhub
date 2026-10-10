@@ -39,6 +39,8 @@
   let dlg = $state<HTMLDialogElement>();
   let savePrepared = $state<Prepared | null>(null);
   let saveDlg = $state<HTMLDialogElement>();
+  let removing = $state<InstalledView | null>(null);
+  let removeDlg = $state<HTMLDialogElement>();
   let guide = $state<HTMLDialogElement>();
   let dependencies = $state<HTMLDialogElement>();
   let upd = $state<HTMLDialogElement>();
@@ -146,6 +148,7 @@
     x: "M6 6l12 12 M18 6L6 18",
     alert: "M12 3l9.5 17h-19z M12 10v4 M12 17h.01",
     settings: "M12 15a3 3 0 1 0 0-6a3 3 0 1 0 0 6z M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z",
+    trash: "M3 6h18 M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6 M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2 M10 11v6 M14 11v6",
   };
   const initials = (s: string) =>
     s.split(/\s+/).map((w) => w.match(/[\p{L}\p{N}]/u)?.[0] ?? "").filter(Boolean).slice(0, 2).join("").toUpperCase() || "?";
@@ -720,15 +723,22 @@
     savePrepared = null;
   }
 
-  async function remove(i: InstalledView) {
-    const ok = await confirm(t("confirmRemove", { name: i.folder }), {
-      title: "Eden Mod Manager",
-      kind: "warning",
-      okLabel: t("remove"),
-      cancelLabel: t("cancel"),
-    });
-    if (!ok) return;
-    await run(() => api.uninstall(i.tid, i.folder));
+  function remove(i: InstalledView) {
+    removing = i;
+    openModal(removeDlg);
+  }
+
+  function cancelRemove() {
+    removing = null;
+    removeDlg?.close();
+  }
+
+  async function confirmRemove() {
+    if (!removing) return;
+    const item = removing;
+    removing = null;
+    removeDlg?.close();
+    await run(() => api.uninstall(item.tid, item.folder));
     await refreshInstalled();
   }
 
@@ -1221,6 +1231,27 @@
     {/if}
   </dialog>
 
+  <dialog bind:this={removeDlg} class="modal rm-modal" aria-labelledby="rm-title" tabindex="-1" oncancel={(e) => { e.preventDefault(); cancelRemove(); }}>
+    {#if removing}
+      <div class="rm-header">
+        <div class="rm-badge">
+          {@render icon(ICON.trash)}
+        </div>
+        <div class="rm-title-wrap">
+          <h3 id="rm-title">{t("confirmRemoveTitle")}</h3>
+          <p class="rm-sub">{removing.name || removing.folder}</p>
+        </div>
+      </div>
+      <p class="rm-body">
+        {removing.destination === "save" ? t("confirmRemoveSaveDesc") : t("confirmRemoveDesc")}
+      </p>
+      <div class="actions">
+        <button class="ghost" onclick={cancelRemove}>{t("cancel")}</button>
+        <button class="danger" onclick={confirmRemove}>{@render icon(ICON.trash)}{t("remove")}</button>
+      </div>
+    {/if}
+  </dialog>
+
   <dialog bind:this={gbDlg} class="modal gbmod" aria-labelledby="gbm-title" tabindex="-1" onclose={() => (gbOpen = null)}>
     {#if gbOpen}
       {@const m = gbOpen}
@@ -1649,6 +1680,13 @@
   .modal[open], .menu:popover-open { transition: opacity 0.16s ease, transform 0.16s ease; }
   @starting-style { .modal[open], .menu:popover-open { opacity: 0; transform: translateY(6px) scale(0.98); } }
   .modal h3 { margin: 0 0 4px; font-size: 16px; }
+  .rm-modal { width: min(440px, 92vw); }
+  .rm-header { display: flex; align-items: center; gap: 14px; margin-bottom: 12px; }
+  .rm-badge { width: 42px; height: 42px; border-radius: 12px; background: rgba(239, 68, 68, 0.12); color: var(--danger); display: grid; place-items: center; flex-shrink: 0; }
+  .rm-title-wrap { min-width: 0; }
+  .rm-title-wrap h3 { margin: 0; font-size: 16px; font-weight: 600; }
+  .rm-sub { margin: 2px 0 0; font-size: 13px; color: var(--fg-soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .rm-body { margin: 0 0 18px; font-size: 13.5px; line-height: 1.5; color: var(--fg-soft); }
   .rootlist { overflow-y: auto; display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
   .rootlist label { padding: 8px 10px; border-radius: 8px; background: var(--input); border: 1px solid var(--border-soft); }
   .rootlist label .muted { margin-left: auto; font-size: 12px; }
