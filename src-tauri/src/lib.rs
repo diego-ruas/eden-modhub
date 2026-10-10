@@ -25,6 +25,12 @@ struct Settings {
     emulator: Kind,
     /// pasta de dados escolhida por emulador
     dirs: HashMap<Kind, String>,
+    /// executável escolhido por emulador (quando a detecção automática não acha)
+    #[serde(default)]
+    exes: HashMap<Kind, String>,
+    /// arquivo do jogo escolhido pelo usuário, por TID (maiúsculo)
+    #[serde(default)]
+    game_files: HashMap<String, String>,
 }
 
 #[derive(Clone, Copy)]
@@ -126,6 +132,59 @@ fn set_emu_dir(app: AppHandle, kind: Kind, path: String) -> Result<(), String> {
     }
     s.dirs.insert(kind, path);
     save_settings(&app, &s)
+}
+
+fn resolved_exe(s: &Settings, emu: &Emu) -> Option<std::path::PathBuf> {
+    s.exes.get(&emu.kind).map(std::path::PathBuf::from).filter(|p| p.is_file()).or_else(|| emu::find_exe(emu))
+}
+
+/// Executável do emulador ativo (salvo ou detectado); `None` quando o app precisa pedir ao usuário.
+#[tauri::command]
+fn emu_exe(app: AppHandle) -> Option<String> {
+    let s = load_settings(&app);
+    resolved_exe(&s, &emu_for(&s, s.emulator)?).map(|p| p.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+fn set_emu_exe(app: AppHandle, path: String) -> Result<(), String> {
+    if !std::path::Path::new(&path).is_file() {
+        return Err("Executável do emulador inválido".into());
+    }
+    let mut s = load_settings(&app);
+    s.exes.insert(s.emulator, path);
+    save_settings(&app, &s)
+}
+
+/// Arquivo do jogo escolhido pelo usuário, para jogos cujo nome não traz o TID (o app não lê o TID de dentro do nsp/xci: precisa de prod.keys).
+#[tauri::command]
+fn set_game_file(app: AppHandle, tid: String, path: String) -> Result<(), String> {
+    emu::check_tid(&tid)?;
+    let p = std::path::Path::new(&path);
+    if !p.is_file() || !p.extension().is_some_and(|x| x.eq_ignore_ascii_case("nsp") || x.eq_ignore_ascii_case("xci")) {
+        return Err("Arquivo do jogo inválido".into());
+    }
+    let mut s = load_settings(&app);
+    s.game_files.insert(tid.to_ascii_uppercase(), path);
+    save_settings(&app, &s)
+}
+
+/// Abre o jogo no emulador ativo (`-g <arquivo>` no Eden/yuzu; o arquivo como argumento no Ryujinx).
+#[tauri::command]
+fn launch_game(app: AppHandle, tid: String) -> Result<(), String> {
+    emu::check_tid(&tid)?;
+    let s = load_settings(&app);
+    let emu = emu_for(&s, s.emulator).ok_or("Pasta do emulador não configurada")?;
+    let exe = resolved_exe(&s, &emu).ok_or("Executável do emulador não encontrado")?;
+    let saved = s.game_files.get(&tid.to_ascii_uppercase()).map(std::path::PathBuf::from).filter(|p| p.is_file());
+    let game = match saved { Some(p) => p, None => emu::game_file(&emu, &tid)? };
+    let mut cmd = std::process::Command::new(&exe);
+    if emu.kind != Kind::Ryujinx { cmd.arg("-g"); }
+    // stdio nulo: o app não tem console e herdar handles inválidos faz o CreateProcess falhar (os error 50)
+    cmd.arg(&game).current_dir(exe.parent().unwrap_or(std::path::Path::new(".")))
+        .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    let mut child = cmd.spawn().map_err(|e| format!("Falha ao iniciar o emulador: {e}"))?;
+    std::thread::spawn(move || { let _ = child.wait(); }); // colhe o processo; o emulador segue vivo se o app fechar
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -230,7 +289,7 @@ async fn game_cover(app: AppHandle, tid: String) -> Option<String> {
 fn open_mod_folder(app: AppHandle, tid: String) -> Result<(), String> {
     emu::check_tid(&tid)?;
     use tauri_plugin_opener::OpenerExt;
-    let dir = resolve_emu(&app)?.tid_dir(&tid);
+    let dir = install::mod_folder(&app, &tid)?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     app.opener().open_path(dir.to_string_lossy(), None::<&str>).map_err(|e| e.to_string())
 }
@@ -268,6 +327,12 @@ pub fn run() {
             install::prepare_local,
             install::list_installed,
             install::set_mod_enabled,
+            install::install_frameworks,
+            install::framework_status,
+            emu_exe,
+            set_emu_exe,
+            launch_game,
+            set_game_file,
             install::list_conflicts,
             install::uninstall,
             nsz::nsz_run,

@@ -121,6 +121,23 @@ impl Emu {
         }
     }
 
+    /// Raiz da SD emulada; no modo portátil `dir` já aponta para `user`.
+    pub fn sd_dir(&self) -> PathBuf {
+        if self.kind == Kind::Ryujinx {
+            return self.dir.join("sdcard");
+        }
+        let ini = read_ini(&qt_config(&self.dir));
+        match ini.get("Data%20Storage/sdmc_directory") {
+            Some(v) if !v.trim_matches('"').is_empty()
+                && ini.get("Data%20Storage/sdmc_directory\\default").is_none_or(|v| v != "true") =>
+            {
+                let path = PathBuf::from(v.trim_matches('"'));
+                if path.is_absolute() { path } else { self.dir.join(path) }
+            }
+            _ => self.dir.join("sdmc"),
+        }
+    }
+
     /// Ryujinx usa o TID em minúsculas.
     pub fn tid_dir(&self, tid: &str) -> PathBuf {
         let name = if self.kind == Kind::Ryujinx { tid.to_lowercase() } else { tid.to_string() };
@@ -222,6 +239,54 @@ pub fn rom_files(emu: &Emu) -> Vec<PathBuf> {
     out
 }
 
+impl Kind {
+    fn exe_names(self) -> &'static [&'static str] {
+        match self {
+            Kind::Eden => &["eden.exe", "eden"],
+            Kind::Yuzu => &["yuzu.exe", "yuzu"],
+            Kind::Ryujinx => &["Ryujinx.exe", "Ryujinx", "ryujinx"],
+        }
+    }
+}
+
+/// Procura o executável do emulador: pasta do modo portátil, pastas comuns de instalação/extração e o PATH.
+/// `None` quando não acha; o app então pede o arquivo uma vez e o guarda nas configurações.
+pub fn find_exe(emu: &Emu) -> Option<PathBuf> {
+    let names = emu.kind.exe_names();
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    // portátil: `user` (Eden/yuzu) ou `portable` (Ryujinx) ficam ao lado do executável
+    if emu.dir.file_name().is_some_and(|n| n == "user" || n == "portable") {
+        dirs.extend(emu.dir.parent().map(Path::to_path_buf));
+    }
+    let folder = match emu.kind { Kind::Eden => "eden", Kind::Yuzu => "yuzu", Kind::Ryujinx => "Ryujinx" };
+    let home = dirs::home_dir();
+    let bases = [dirs::data_local_dir(), home.clone(), home.as_ref().map(|h| h.join("Games")), dirs::document_dir(),
+        Some(PathBuf::from("C:\\Program Files")), Some(PathBuf::from("/Applications")), Some(PathBuf::from("/opt"))];
+    for b in bases.into_iter().flatten() {
+        for name in [folder, &folder.to_lowercase()] {
+            let d = b.join(name);
+            // a própria pasta e um nível abaixo (ex.: `yuzu/yuzu-windows-msvc`, `Eden-Windows-x64`)
+            let subs = std::fs::read_dir(&d).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.is_dir());
+            dirs.push(d.clone());
+            dirs.extend(subs);
+        }
+    }
+    dirs.extend(std::env::var_os("PATH").iter().flat_map(std::env::split_paths));
+    dirs.iter().flat_map(|d| names.iter().map(move |n| d.join(n))).find(|p| p.is_file())
+}
+
+/// Arquivo iniciável do jogo `tid` (nsp/xci do jogo base; updates e DLC não iniciam sozinhos).
+pub fn game_file(emu: &Emu, tid: &str) -> Result<PathBuf, String> {
+    let found: Vec<PathBuf> = rom_files(emu).into_iter().filter(|p| {
+        let stem = p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        crate::catalog::last_tid(&stem).is_some_and(|t| t.eq_ignore_ascii_case(tid))
+    }).collect();
+    if found.is_empty() { return Err("Arquivo do jogo não encontrado nas pastas de jogos do emulador".into()); }
+    found.into_iter()
+        .find(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("nsp") || x.eq_ignore_ascii_case("xci")))
+        .ok_or_else(|| "Jogo compactado (nsz/xcz): descomprima na aba NSZ para iniciar".into())
+}
+
 pub fn list_games(emu: &Emu, names: &HashMap<String, String>) -> Vec<Game> {
     let mut games: HashMap<String, Game> = HashMap::new();
 
@@ -302,6 +367,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn sd_directory_uses_portable_root_or_custom_qt_storage() {
+        let dir = std::env::temp_dir().join(format!("emm-sd-path-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("user/config")).unwrap();
+        let emu = Emu { kind: Kind::Eden, dir: dir.join("user") };
+        assert_eq!(emu.sd_dir(), emu.dir.join("sdmc"));
+        let custom = dir.join("Custom SD");
+        let config = emu.dir.join("config/qt-config.ini");
+        std::fs::write(&config, format!("[Data%20Storage]\nsdmc_directory=\"{}\"\nsdmc_directory\\default=false\n", custom.display())).unwrap();
+        assert_eq!(emu.sd_dir(), custom);
+        std::fs::write(&config, "[Data%20Storage]\nsdmc_directory=old-path\nsdmc_directory\\default=true\n").unwrap();
+        assert_eq!(emu.sd_dir(), emu.dir.join("sdmc"));
+        std::fs::write(&config, "[Data%20Storage]\nsdmc_directory=custom-sd\nsdmc_directory\\default=false\n").unwrap();
+        assert_eq!(emu.sd_dir(), emu.dir.join("custom-sd"));
+        let ryu = Emu { kind: Kind::Ryujinx, dir: dir.clone() };
+        assert_eq!(ryu.sd_dir(), dir.join("sdcard"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn ryujinx_layout() {
         let dir = std::env::temp_dir().join("eden-mod-manager-ryu-test");
         let _ = std::fs::remove_dir_all(&dir);
@@ -313,6 +398,33 @@ mod tests {
         assert_eq!(game_dirs(&emu), vec![("D:/Jogos".into(), true), ("E:/x".into(), true)]);
         assert_eq!(emu.tid_dir("0100ABCD00001000"), dir.join("mods").join("contents").join("0100abcd00001000"));
         assert_eq!(emu.keys_dir(), dir.join("system"));
+    }
+
+    #[test]
+    fn game_file_prefers_base_game_and_rejects_compressed_only() {
+        let root = std::env::temp_dir().join(format!("emm-game-file-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let games = root.join("games");
+        std::fs::create_dir_all(&games).unwrap();
+        std::fs::create_dir_all(root.join("user/config")).unwrap();
+        let ini = format!("[UI]\nPaths\\gamedirs\\size=1\nPaths\\gamedirs\\1\\path={}\nPaths\\gamedirs\\1\\deep_scan=true\n", games.display());
+        std::fs::write(root.join("user/config/qt-config.ini"), ini).unwrap();
+        let emu = Emu { kind: Kind::Eden, dir: root.join("user") };
+        let tid = "0100F2C0115B6000";
+        assert!(game_file(&emu, tid).unwrap_err().starts_with("Arquivo do jogo não encontrado"));
+        // update (+0x800) não inicia sozinho; o jogo base compactado (nsz) é recusado com dica
+        std::fs::write(games.join("Zelda [0100F2C0115B6800][v65536].nsp"), b"u").unwrap();
+        assert!(game_file(&emu, tid).unwrap_err().starts_with("Arquivo do jogo não encontrado"));
+        std::fs::write(games.join("Zelda [0100F2C0115B6000][v0].nsz"), b"z").unwrap();
+        assert!(game_file(&emu, tid).unwrap_err().starts_with("Jogo compactado"));
+        std::fs::write(games.join("Zelda [0100F2C0115B6000][v0].xci"), b"x").unwrap();
+        assert_eq!(game_file(&emu, tid).unwrap(), games.join("Zelda [0100F2C0115B6000][v0].xci"));
+        std::fs::remove_file(games.join("Zelda [0100F2C0115B6000][v0].xci")).unwrap();
+        assert!(game_file(&emu, tid).unwrap_err().starts_with("Jogo compactado"));
+        // modo portátil: o executável fica ao lado da pasta `user`
+        std::fs::write(root.join(Kind::Eden.exe_names()[0]), b"").unwrap();
+        assert_eq!(find_exe(&emu), Some(root.join(Kind::Eden.exe_names()[0])));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
