@@ -9,19 +9,21 @@ use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 const API: &str = "https://gamebanana.com/apiv11";
-const MIN_LIKES: u32 = 50;
+const MIN_LIKES: u32 = 15;
 const PER_PAGE: u32 = 50;
-// teto de segurança contra paginação infinita (5000 mods por consulta); o fim normal é `_bIsComplete`
-const MAX_PAGES: u32 = 100;
+// teto de segurança contra paginação infinita (1250 mods por consulta); o fim normal é `_bIsComplete`
+const MAX_PAGES: u32 = 25;
 // páginas pedidas em paralelo; o índice pesa ~380 KB por página sem gzip
-const BATCH: u32 = 6;
-const MAX_INFLIGHT: usize = 6;
-const TTL: Duration = Duration::from_secs(600);
+const BATCH: u32 = 8;
+const MAX_INFLIGHT: usize = 8;
+const TTL: Duration = Duration::from_secs(1800);
 
 // pedidos simultâneos ao GameBanana (todas as varreduras juntas)
 static INFLIGHT: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(MAX_INFLIGHT);
 // (tid, todos?) -> mods; vale `TTL`
 static CACHE: LazyLock<Mutex<HashMap<(String, bool), (Instant, Vec<GbMod>)>>> = LazyLock::new(Default::default);
+// cache de id do jogo no GameBanana por nome normalizado (evita roundtrip ao Util/Search/Results)
+static GAME_IDS: LazyLock<Mutex<HashMap<String, u64>>> = LazyLock::new(Default::default);
 
 #[derive(Deserialize)]
 struct Page<T> {
@@ -101,14 +103,21 @@ async fn get<T: serde::de::DeserializeOwned>(path: &str, query: &[(&str, String)
 /// Id do jogo no GameBanana: primeiro resultado da busca com o mesmo nome normalizado.
 /// ponytail: só nome exato; jogos com título diferente no site ficam sem mods de lá.
 async fn find_game(name: &str) -> Result<Option<u64>, String> {
+    let want = catalog::norm(name);
+    if let Some(&id) = GAME_IDS.lock().get(&want) {
+        return Ok(Some(id));
+    }
     let q = [
         ("_sSearchString", name.to_string()),
         ("_sModelName", "Game".into()),
         ("_nPerpage", "15".into()),
     ];
     let page: Page<GameRec> = get("Util/Search/Results", &q).await?;
-    let want = catalog::norm(name);
-    Ok(page.records.into_iter().find(|g| catalog::norm(&g.name) == want).map(|g| g.id))
+    let found = page.records.into_iter().find(|g| catalog::norm(&g.name) == want).map(|g| g.id);
+    if let Some(id) = found {
+        GAME_IDS.lock().insert(want, id);
+    }
+    Ok(found)
 }
 
 /// Uma página do índice de mods do jogo, por curtidas (decrescente).
