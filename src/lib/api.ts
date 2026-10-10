@@ -49,12 +49,13 @@ export type Game = {
   updateFile: string | null;
   updateRegistered: boolean;
 };
-export type RootInfo = { key: string; name: string; fileCount: number };
-export type Prepared = { token: string; roots: RootInfo[] };
+export type Destination = "emulator" | "arcropolis" | "save";
+export type RootInfo = { key: string; name: string; fileCount: number; destination?: Destination };
+export type Prepared = { token: string; roots: RootInfo[]; isSave?: boolean };
 export type Installed = {
   tid: string;
   folder: string;
-  destination?: "emulator" | "arcropolis";
+  destination?: Destination;
   modId: string;
   rootKey: string;
   name: string;

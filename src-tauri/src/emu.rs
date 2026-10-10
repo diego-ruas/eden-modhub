@@ -150,6 +150,110 @@ impl Emu {
     pub fn keys_dir(&self) -> PathBuf {
         self.dir.join(if self.kind == Kind::Ryujinx { "system" } else { "keys" })
     }
+
+    pub fn nand_dir(&self) -> PathBuf {
+        let ini = read_ini(&qt_config(&self.dir));
+        match ini.get("Data%20Storage/nand_directory") {
+            Some(v) if !v.trim_matches('"').is_empty()
+                && ini.get("Data%20Storage/nand_directory\\default").is_none_or(|v| v != "true") =>
+            {
+                let path = PathBuf::from(v.trim_matches('"'));
+                if path.is_absolute() { path } else { self.dir.join(path) }
+            }
+            _ => self.dir.join("nand"),
+        }
+    }
+
+    pub fn save_dir(&self, tid: &str) -> Result<PathBuf, String> {
+        check_tid(tid)?;
+        match self.kind {
+            Kind::Eden | Kind::Yuzu => {
+                let nand = self.nand_dir();
+                let user_save = nand.join("user/save/0000000000000000");
+                if !user_save.is_dir() {
+                    return Err("Pasta de saves do emulador não encontrada. Inicie o jogo ao menos uma vez.".into());
+                }
+                let entries: Vec<_> = std::fs::read_dir(&user_save)
+                    .map_err(|e| format!("Falha ao ler pasta de saves: {e}"))?
+                    .filter_map(|e| e.ok())
+                    .filter(|e| e.file_type().is_ok_and(|ft| ft.is_dir()))
+                    .map(|e| e.path())
+                    .collect();
+                if entries.is_empty() {
+                    return Err("Nenhum perfil de usuário encontrado no emulador. Inicie o jogo ao menos uma vez.".into());
+                }
+                let tid_upper = tid.to_ascii_uppercase();
+                let chosen = entries.iter().find(|p| p.join(&tid_upper).exists())
+                    .unwrap_or(&entries[0]);
+                Ok(chosen.join(&tid_upper))
+            }
+            Kind::Ryujinx => {
+                let user_save = self.dir.join("bis/user/save");
+                if !user_save.is_dir() {
+                    return Err("Pasta de saves do emulador não encontrada. Inicie o jogo ao menos uma vez.".into());
+                }
+                let info_file = user_save.join("ExtraSaveDirInfo");
+                if let Ok(info) = std::fs::read_to_string(&info_file) {
+                    for line in info.lines() {
+                        let parts: Vec<&str> = line.split_whitespace().collect();
+                        if parts.len() >= 2 && parts[0].eq_ignore_ascii_case(tid) {
+                            return Ok(user_save.join(parts[1]).join("0"));
+                        }
+                    }
+                }
+                let entries: Vec<_> = std::fs::read_dir(&user_save)
+                    .map_err(|e| format!("Falha ao ler pasta de saves: {e}"))?
+                    .filter_map(|e| e.ok())
+                    .filter(|e| e.file_type().is_ok_and(|ft| ft.is_dir()))
+                    .map(|e| e.path())
+                    .collect();
+                if let Some(first) = entries.first() {
+                    let zero = first.join("0");
+                    if zero.is_dir() {
+                        return Ok(zero);
+                    }
+                    return Ok(first.clone());
+                }
+                Err("Nenhum perfil de usuário encontrado no emulador. Inicie o jogo ao menos uma vez.".into())
+            }
+        }
+    }
+
+    pub fn is_running(&self) -> bool {
+        let exe_names = match self.kind {
+            Kind::Eden => &["eden.exe", "eden"][..],
+            Kind::Yuzu => &["yuzu.exe", "yuzu"][..],
+            Kind::Ryujinx => &["ryujinx.exe", "Ryujinx.exe", "Ryujinx", "ryujinx"][..],
+        };
+        #[cfg(windows)]
+        {
+            let output = std::process::Command::new("tasklist")
+                .args(["/NH", "/FO", "CSV"])
+                .output();
+            if let Ok(out) = output {
+                let stdout = String::from_utf8_lossy(&out.stdout).to_lowercase();
+                for name in exe_names {
+                    if stdout.contains(&name.to_lowercase()) {
+                        return true;
+                    }
+                }
+            }
+            false
+        }
+        #[cfg(not(windows))]
+        {
+            for name in exe_names {
+                let output = std::process::Command::new("pgrep")
+                    .arg("-x")
+                    .arg(name)
+                    .output();
+                if output.is_ok_and(|o| !o.stdout.is_empty()) {
+                    return true;
+                }
+            }
+            false
+        }
+    }
 }
 
 /// O TID vem do webview e vira nome de pasta: só 16 dígitos hexadecimais (nada de `..`, `\` ou caminho absoluto).
