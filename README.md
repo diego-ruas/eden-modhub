@@ -52,6 +52,7 @@ Optional built-in NSZ compressor. Windows, Linux and macOS.
 - **Finds your emulator automatically.** Detects the data folder (including Flatpak and portable `user` setups) and your game folders.
 - **Your games, with cover art.** Reads the emulator's own game list and covers, and fetches missing ones.
 - **Four sources in one list.** Official database, TheBoy181, the Switch Mods Wiki Archive and a PT-BR translation pack, merged and de-duplicated.
+- **GameBanana tab.** A separate tab lists user-made mods for the selected game from [GameBanana](https://gamebanana.com) as cards with a details popup. They are third-party content, not part of the repository and not reviewed by this app, which only downloads the file from there and installs it.
 - **Filters that cut the noise.** Search by name, filter by source, or show only mods matching your installed game version.
 - **Safe installs.** Pick which variants of a package to install (resolutions, FPS, etc.), enable or disable them without deleting (written to the emulator config, so do it with the emulator closed), update when the catalog has a newer version, see which mods contain the same `romfs`/`exefs` files, and remove them with one click.
 - **Bring your own mod.** The **+** button in the Installed panel takes a `.zip`, `.7z` or `.rar` you downloaded yourself and installs it with the same variant picker.
@@ -119,7 +120,7 @@ Built with [Tauri 2](https://tauri.app), [SvelteKit](https://svelte.dev) and Rus
 
 ## Credits
 
-Mod data comes from [Switch-Emulator-Mod-Database](https://github.com/ADEMOLA200/Switch-Emulator-Mod-Database), [theboy181/switch-ptchtxt-mods](https://github.com/theboy181/switch-ptchtxt-mods) and [Switch-Mods-Wiki-Archive](https://github.com/amakvana/Switch-Mods-Wiki-Archive). PT-BR translations from [staticpiratex/Traducoes-SWITCH-PTBR](https://github.com/staticpiratex/Traducoes-SWITCH-PTBR). Compression by [nsz](https://github.com/nicoboss/nsz). Cover art from [nlib](https://api.nlib.cc).
+Mod data comes from [Switch-Emulator-Mod-Database](https://github.com/ADEMOLA200/Switch-Emulator-Mod-Database), [theboy181/switch-ptchtxt-mods](https://github.com/theboy181/switch-ptchtxt-mods) and [Switch-Mods-Wiki-Archive](https://github.com/amakvana/Switch-Mods-Wiki-Archive). GameBanana mods come from [GameBanana](https://gamebanana.com) through its public API. PT-BR translations from [staticpiratex/Traducoes-SWITCH-PTBR](https://github.com/staticpiratex/Traducoes-SWITCH-PTBR). Compression by [nsz](https://github.com/nicoboss/nsz). Cover art from [nlib](https://api.nlib.cc).
 
 Eden Mod Manager is not affiliated with Nintendo or any emulator project. Use it only with games and keys you legally own.
 

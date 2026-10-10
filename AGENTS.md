@@ -13,6 +13,7 @@ Eden Mod Manager: desktop app (Tauri 2 + SvelteKit 5 + Rust) to browse, install 
 | `src-tauri/src/emu.rs` | Emulator detection, data folders, game list |
 | `src-tauri/src/catalog.rs` | Mod catalogs (official, TheBoy181, Wiki), cache, covers. Defines `UA` |
 | `src-tauri/src/pack.rs` | PT-BR translation pack: one release `.zip` read by HTTP Range (list from the central directory, extract only one TID). GitHub's CDN rejects suffix ranges (`bytes=-N`) with 501 |
+| `src-tauri/src/gamebanana.rs` | GameBanana API v11, fetched per game when it is opened: index pages 6 at a time (global cap of 6 requests in flight, one retry on 429), 10 minute in-memory cache (curated is derived from the full list), `gamebanana_detail` for the popup. Mods live only in the backend `CatalogState`, not in the frontend catalog |
 | `src-tauri/src/install.rs` | `download` (emits `download-progress`), install/uninstall, manifest |
 | `src-tauri/src/nsz.rs` | NSZ tool download and runs |
 | `src-tauri/src/update.rs` | `check_update` / `install_update`, portable self-replace, minisign `verify` |
@@ -40,7 +41,7 @@ Run `npm run check` and `cargo test` after code changes. Shell is bash on Window
 - **UI strings go in both `pt` and `en`** in `i18n.svelte.ts`. No hardcoded text in the Svelte file.
 - **New Tauri command** = Rust `#[tauri::command]` + entry in `generate_handler!` in `lib.rs` + wrapper in `api.ts`.
 - **All paths go through `app_dir(app, Dir::...)`** so portable mode works. Never use `app.path()` directly for app data.
-- **HTTP**: send `User-Agent: catalog::UA`. Downloads go through `install::download` so `download-progress` events and the toast keep working.
+- **HTTP**: send `User-Agent: catalog::UA`. Downloads go through `install::download` so `download-progress` events and the toast keep working. `catalog::HTTP` has gzip off on purpose (downloads and Range reads need exact bytes); JSON APIs use `catalog::HTTP_JSON`, which negotiates gzip.
 - Icons are inline stroke paths in the `ICON` map (viewBox 24). No icon library.
 - The frontend does not use `@tauri-apps/plugin-updater` or `plugin-process`; the updater is fully in Rust, so `capabilities/default.json` needs no updater permissions.
 - Code comments are in Portuguese; the README and `AGENTS.md` are in English.
