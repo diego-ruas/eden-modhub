@@ -39,7 +39,7 @@ Click **Install**. Choose the variants you want when the installer asks. Then en
 
 ### From GameBanana
 
-Open the GameBanana tab for a selected game. Select a mod to read its details, then click **Install**.
+Open the GameBanana tab for a selected game. Use the search bar, sort options (Most liked, Newest, Most viewed, Name) and the Featured filter to browse mods. Select a mod to read its details, then click **Install**.
 
 GameBanana mods are uploaded by users. The app does not review these files. Install files only from authors you trust.
 
