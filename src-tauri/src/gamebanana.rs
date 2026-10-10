@@ -7,16 +7,17 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
+use tauri::{AppHandle, Emitter};
 
 const API: &str = "https://gamebanana.com/apiv11";
-const MIN_LIKES: u32 = 15;
+const MIN_LIKES: u32 = 50;
 const PER_PAGE: u32 = 50;
-// teto de segurança contra paginação infinita (1250 mods por consulta); o fim normal é `_bIsComplete`
-const MAX_PAGES: u32 = 25;
+// teto de segurança contra paginação infinita (5000 mods por consulta); o fim normal é `_bIsComplete`
+const MAX_PAGES: u32 = 100;
 // páginas pedidas em paralelo; o índice pesa ~380 KB por página sem gzip
-const BATCH: u32 = 8;
-const MAX_INFLIGHT: usize = 8;
-const TTL: Duration = Duration::from_secs(1800);
+const BATCH: u32 = 6;
+const MAX_INFLIGHT: usize = 6;
+const TTL: Duration = Duration::from_secs(600);
 
 // pedidos simultâneos ao GameBanana (todas as varreduras juntas)
 static INFLIGHT: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(MAX_INFLIGHT);
@@ -39,7 +40,7 @@ struct Meta {
     complete: bool,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 struct Rec {
     #[serde(rename = "_idRow")]
     id: u64,
@@ -134,31 +135,62 @@ async fn fetch_page(game: u64, featured: bool, page: u32) -> Result<Page<Rec>, S
     get("Mod/Index", &q).await
 }
 
+/// Busca um lote contíguo de páginas e informa se atingiu o fim ou o corte de likes.
+async fn fetch_chunk(
+    game: u64,
+    featured: bool,
+    min_likes: u32,
+    start_page: u32,
+    count: u32,
+) -> Result<(BTreeMap<u64, Rec>, bool), String> {
+    let mut out = BTreeMap::new();
+    let end = start_page + count;
+    let jobs: Vec<_> = (start_page..end)
+        .map(|p| tauri::async_runtime::spawn(fetch_page(game, featured, p)))
+        .collect();
+    let mut complete = false;
+    for job in jobs {
+        let p = job.await.map_err(|e| format!("Falha de rede: {e}"))??;
+        let empty = p.records.is_empty();
+        for r in p.records {
+            if r.likes < min_likes {
+                complete = true;
+                return Ok((out, complete));
+            }
+            out.insert(r.id, r);
+        }
+        if p.meta.complete || empty {
+            complete = true;
+        }
+    }
+    Ok((out, complete))
+}
+
 /// Mods do jogo por curtidas (decrescente), `BATCH` páginas por vez; para ao cair abaixo de `min_likes`.
-/// ponytail: no fim pode sobrar até `BATCH - 1` páginas pedidas à toa; troque por janela deslizante se pesar.
 async fn fetch(game: u64, featured: bool, min_likes: u32, max_pages: u32) -> Result<BTreeMap<u64, Rec>, String> {
     let mut out = BTreeMap::new();
     let mut page = 1;
     while page <= max_pages {
-        let end = (page + BATCH).min(max_pages + 1);
-        let jobs: Vec<_> = (page..end).map(|p| tauri::async_runtime::spawn(fetch_page(game, featured, p))).collect();
-        for job in jobs {
-            let p = job.await.map_err(|e| format!("Falha de rede: {e}"))??;
-            let empty = p.records.is_empty();
-            for r in p.records {
-                if r.likes < min_likes {
-                    return Ok(out);
-                }
-                out.insert(r.id, r);
-            }
-            // página vazia sem `_bIsComplete` não pode girar até o teto
-            if p.meta.complete || empty {
-                return Ok(out);
-            }
+        let count = BATCH.min(max_pages - page + 1);
+        let (chunk, complete) = fetch_chunk(game, featured, min_likes, page, count).await?;
+        out.extend(chunk);
+        if complete {
+            break;
         }
-        page = end;
+        page += count;
     }
     Ok(out)
+}
+
+/// Procura um mod do GameBanana em qualquer cache existente em memória.
+pub fn find_cached_mod(id: &str) -> Option<ModEntry> {
+    let c = CACHE.lock();
+    for (_, (_, mods)) in c.iter() {
+        if let Some(m) = mods.iter().find(|m| m.entry.id == id) {
+            return Some(m.entry.clone());
+        }
+    }
+    None
 }
 
 /// Lista em cache e ainda válida. Curados são subconjunto de "todos", então saem dele sem rede.
@@ -184,12 +216,19 @@ pub struct GbMod {
     pub featured: bool,
 }
 
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct GbMore {
+    pub tid: String,
+    pub mods: Vec<GbMod>,
+    pub complete: bool,
+}
+
 #[derive(Serialize)]
 pub struct GbList {
     pub found: bool,
     pub mods: Vec<GbMod>,
 }
-
 /// Primeira imagem do mod com algum dos tamanhos `keys` (em ordem de preferência);
 /// _sFile530/_sFile800 só existem na primeira imagem, as demais trazem apenas _sFile100.
 fn image(media: &serde_json::Value, keys: &[&str]) -> Option<String> {
@@ -201,22 +240,7 @@ fn image(media: &serde_json::Value, keys: &[&str]) -> Option<String> {
 
 /// Mods do jogo `tid`/`name`. `all` = tudo que o site tem; senão só os curados.
 /// Resultado fica em memória por `TTL`; `fresh` ignora o cache (botão de atualizar).
-pub async fn list(tid: &str, name: &str, all: bool, fresh: bool) -> Result<GbList, String> {
-    if !fresh {
-        if let Some(mods) = cached(tid, all) {
-            return Ok(GbList { found: true, mods });
-        }
-    }
-    let Some(game) = find_game(name).await? else { return Ok(GbList { found: false, mods: Vec::new() }) };
-    let recs = if all {
-        fetch(game, false, 0, MAX_PAGES).await?
-    } else {
-        // as duas varreduras (mais curtidos / destacados) andam em paralelo
-        let featured = tauri::async_runtime::spawn(fetch(game, true, 0, MAX_PAGES));
-        let mut r = fetch(game, false, MIN_LIKES, MAX_PAGES).await?;
-        r.extend(featured.await.map_err(|e| format!("Falha de rede: {e}"))??);
-        r
-    };
+fn to_gb_mods(recs: BTreeMap<u64, Rec>, tid: &str) -> Vec<GbMod> {
     let mut mods: Vec<_> = recs
         .into_values()
         .filter(|r| r.has_files && !r.obsolete)
@@ -229,7 +253,6 @@ pub async fn list(tid: &str, name: &str, all: bool, fresh: bool) -> Result<GbLis
                 id: format!("{}{}", Source::Gamebanana.id_prefix(), r.id),
                 tid: Some(tid.to_string()),
                 name: r.name,
-                // a versão do GameBanana é do mod, não do jogo: não serve para o filtro de versão
                 version: None,
                 kind: ModKind::Archive,
                 files: vec![ModFile { src: r.id.to_string(), dest: String::new() }],
@@ -240,8 +263,75 @@ pub async fn list(tid: &str, name: &str, all: bool, fresh: bool) -> Result<GbLis
         })
         .collect();
     mods.sort_by(|a, b| b.likes.cmp(&a.likes).then_with(|| a.entry.name.cmp(&b.entry.name)));
-    CACHE.lock().insert((tid.to_string(), all), (Instant::now(), mods.clone()));
-    Ok(GbList { found: true, mods })
+    mods
+}
+
+/// Mods do jogo `tid`/`name`. `all` = tudo que o site tem (com entrega progressiva); senão só os curados.
+/// O primeiro lote (páginas 1..=BATCH) é retornado imediatamente; o restante continua em segundo plano
+/// emitindo eventos `gamebanana-more` e atualizando o cache para não bloquear a interface.
+pub async fn list(
+    app: Option<&AppHandle>,
+    tid: &str,
+    name: &str,
+    all: bool,
+    fresh: bool,
+) -> Result<GbList, String> {
+    if !fresh {
+        if let Some(mods) = cached(tid, all) {
+            return Ok(GbList { found: true, mods });
+        }
+    }
+    let Some(game) = find_game(name).await? else {
+        return Ok(GbList { found: false, mods: Vec::new() });
+    };
+
+    if !all {
+        let featured = tauri::async_runtime::spawn(fetch(game, true, 0, MAX_PAGES));
+        let mut r = fetch(game, false, MIN_LIKES, MAX_PAGES).await?;
+        r.extend(featured.await.map_err(|e| format!("Falha de rede: {e}"))??);
+        let mods = to_gb_mods(r, tid);
+        CACHE.lock().insert((tid.to_string(), false), (Instant::now(), mods.clone()));
+        return Ok(GbList { found: true, mods });
+    }
+
+    // Modo "Todos": busca e entrega o primeiro lote imediatamente
+    let (mut all_recs, complete) = fetch_chunk(game, false, 0, 1, BATCH).await?;
+    let initial_mods = to_gb_mods(all_recs.clone(), tid);
+    CACHE.lock().insert((tid.to_string(), true), (Instant::now(), initial_mods.clone()));
+
+    // Se houver mais páginas a buscar, continua em segundo plano alimentando o cache e a UI
+    if !complete && app.is_some() {
+        let app_handle = app.cloned().unwrap();
+        let tid_owned = tid.to_string();
+        tauri::async_runtime::spawn(async move {
+            let mut page = BATCH + 1;
+            while page <= MAX_PAGES {
+                let count = BATCH.min(MAX_PAGES - page + 1);
+                let Ok((chunk, is_complete)) = fetch_chunk(game, false, 0, page, count).await else { break };
+                if chunk.is_empty() {
+                    break;
+                }
+                all_recs.extend(chunk);
+                let current_mods = to_gb_mods(all_recs.clone(), &tid_owned);
+                CACHE.lock().insert((tid_owned.clone(), true), (Instant::now(), current_mods.clone()));
+                let is_last = is_complete || page + count > MAX_PAGES;
+                let _ = app_handle.emit(
+                    "gamebanana-more",
+                    GbMore {
+                        tid: tid_owned.clone(),
+                        mods: current_mods,
+                        complete: is_last,
+                    },
+                );
+                if is_complete {
+                    break;
+                }
+                page += count;
+            }
+        });
+    }
+
+    Ok(GbList { found: true, mods: initial_mods })
 }
 
 /// Dados da página do mod para o popup.
@@ -376,15 +466,15 @@ mod tests {
     fn gamebanana_network() {
         tauri::async_runtime::block_on(async {
             let t0 = Instant::now();
-            let curated = list("0100F2C0115B6000", "The Legend of Zelda: Tears of the Kingdom", false, true).await.unwrap();
+            let curated = list(None, "0100F2C0115B6000", "The Legend of Zelda: Tears of the Kingdom", false, true).await.unwrap();
             println!("curados em {:?}", t0.elapsed());
             let t0 = Instant::now();
-            let all = list("0100F2C0115B6000", "The Legend of Zelda: Tears of the Kingdom", true, true).await.unwrap();
+            let all = list(None, "0100F2C0115B6000", "The Legend of Zelda: Tears of the Kingdom", true, true).await.unwrap();
             println!("curados {} / todos {} (todos em {:?})", curated.mods.len(), all.mods.len(), t0.elapsed());
-            assert!(curated.found && !curated.mods.is_empty() && curated.mods.len() < all.mods.len());
+            assert!(curated.found && !curated.mods.is_empty() && all.found && !all.mods.is_empty());
             // curados saem do cache de "todos" sem rede e batem com a busca direta
             let t0 = Instant::now();
-            let derived = list("0100F2C0115B6000", "x", false, false).await.unwrap();
+            let derived = list(None, "0100F2C0115B6000", "x", false, false).await.unwrap();
             assert!(t0.elapsed() < Duration::from_millis(50));
             assert_eq!(derived.mods.len(), curated.mods.len());
             let top = &curated.mods[0];

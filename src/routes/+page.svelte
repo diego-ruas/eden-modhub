@@ -9,7 +9,7 @@
     api, githubUrl, modPath, SOURCE_LABEL, norm,
     type Catalog, type Conflict, type Game, type InstalledView, type ModEntry, type NszOp, type Prepared, type RomFile,
     type Emu, type RootInfo, type Source, type UpdateCheck, type EmuDir, type StorageInfo,
-    type GbMod, type GbDetail, type FrameworkStatus,
+    type GbMod, type GbMore, type GbDetail, type FrameworkStatus,
   } from "$lib/api";
   import { EMU_HINT, EMU_NAME, i18n, locale, setLang, t, trErr, type Lang } from "$lib/i18n.svelte";
 
@@ -661,6 +661,11 @@
     const unLog = listen<string>("nsz-log", (e) => {
       nszLog = (nszLog + e.payload + "\n").slice(-6000);
     });
+    const unGbMore = listen<GbMore>("gamebanana-more", (e) => {
+      if (e.payload.tid === selected?.tid && gb && gb.tid === selected?.tid) {
+        gb = { ...gb, mods: e.payload.mods };
+      }
+    });
     reloadEmu();
     if (autoUpdate) api.checkUpdate().then((r) => { if (r.version && !guide?.open) { update = r; openModal(upd); } }).catch(() => {});
     return () => {
@@ -668,6 +673,7 @@
       unNsz.then((f) => f());
       unStage.then((f) => f());
       unLog.then((f) => f());
+      unGbMore.then((f) => f());
     };
   });
 </script>

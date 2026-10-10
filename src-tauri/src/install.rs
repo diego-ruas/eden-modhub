@@ -366,6 +366,7 @@ pub async fn prepare_install(
         .lock()
         .as_ref()
         .and_then(|c| c.mods.iter().find(|m| m.id == mod_id).cloned())
+        .or_else(|| crate::gamebanana::find_cached_mod(&mod_id))
         .ok_or("Mod não encontrado no catálogo")?;
     if m.tid.as_deref().is_some_and(|t| !t.eq_ignore_ascii_case(&tid)) {
         return Err("Este mod é de outro jogo".into());
@@ -1378,7 +1379,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let found = tauri::async_runtime::block_on(async {
-            let mods = crate::gamebanana::list("0100F2C0115B6000", "The Legend of Zelda: Tears of the Kingdom", false, false)
+            let mods = crate::gamebanana::list(None, "0100F2C0115B6000", "The Legend of Zelda: Tears of the Kingdom", false, false)
                 .await
                 .unwrap();
             for m in mods.mods.iter().take(8) {
