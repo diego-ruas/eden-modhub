@@ -46,7 +46,7 @@ Use **+** in the Installed panel to install your own `.zip`, `.7z` or `.rar` arc
 
 Archive extensions do not guarantee a supported layout. TKCL containers with a filename ending in `_tkcl.zip` are skipped. Other games can require loaders that the app does not provide.
 
-The app also includes optional tools to compress NSP/XCI files and decompress NSZ/XCZ files. These tools are not required to install mods.
+The app also includes optional tools to compress NSP/XCI files and decompress NSZ/XCZ files. Games stored in compressed format display an NSZ indicator and direct shortcut to decompress them, and game update packages found in your game folders are automatically registered in the emulator.
 
 ## User guide
 

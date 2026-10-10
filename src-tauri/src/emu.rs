@@ -15,6 +15,7 @@ pub struct Game {
     pub icon: Option<String>,
     pub is_compressed: bool,
     pub update_file: Option<String>,
+    pub update_registered: bool,
 }
 
 static PV_TID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^01[0-9A-F]{14}$").unwrap());
@@ -351,13 +352,18 @@ pub(crate) fn add_external_content_dir(text: &str, dir: &str) -> String {
 pub fn register_update(emu: &Emu, base_tid: &str, update_path: &Path) -> Result<(), String> {
     if emu.kind == Kind::Ryujinx {
         let dir = emu.dir.join("games").join(base_tid.to_lowercase());
-        let _ = std::fs::create_dir_all(&dir);
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| format!("Falha ao criar pasta de configuração do Ryujinx: {e}"))?;
         let path_str = update_path.to_string_lossy().to_string();
         let file = dir.join("updates.json");
-        let mut data: serde_json::Value = std::fs::read(&file)
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_else(|| serde_json::json!({ "selected": null, "paths": [] }));
+        let mut data: serde_json::Value = if file.exists() {
+            let bytes = std::fs::read(&file)
+                .map_err(|e| format!("Falha ao ler updates.json do Ryujinx: {e}"))?;
+            serde_json::from_slice(&bytes)
+                .map_err(|e| format!("updates.json corrompido: {e}"))?
+        } else {
+            serde_json::json!({ "selected": null, "paths": [] })
+        };
         let mut paths: Vec<String> = data["paths"]
             .as_array()
             .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
@@ -367,31 +373,33 @@ pub fn register_update(emu: &Emu, base_tid: &str, update_path: &Path) -> Result<
         }
         data["selected"] = serde_json::Value::String(path_str);
         data["paths"] = serde_json::Value::Array(paths.into_iter().map(serde_json::Value::String).collect());
-        if let Ok(bytes) = serde_json::to_vec_pretty(&data) {
-            let _ = std::fs::write(&file, bytes);
-        }
+        let bytes = serde_json::to_vec_pretty(&data)
+            .map_err(|e| format!("Falha ao serializar updates.json: {e}"))?;
+        std::fs::write(&file, bytes)
+            .map_err(|e| format!("Falha ao gravar updates.json do Ryujinx: {e}"))?;
     } else {
         let cfg_path = qt_config(&emu.dir);
-        if let Ok(text) = std::fs::read_to_string(&cfg_path) {
-            let update_dir = update_path.parent().unwrap_or(update_path);
-            let dir_str = update_dir.to_string_lossy().replace('\\', "/");
-            let ini = read_ini(&cfg_path);
-            let n: usize = ini.get("UI/Paths\\external_content_dirs\\size").and_then(|s| s.parse().ok()).unwrap_or(0);
-            let mut exists = false;
-            let norm_u = dir_str.trim_end_matches('/').to_lowercase();
-            for i in 1..=n {
-                if let Some(p) = ini.get(&format!("UI/Paths\\external_content_dirs\\{i}\\path")) {
-                    let norm_p = p.replace('\\', "/").trim_end_matches('/').to_lowercase();
-                    if norm_p == norm_u || norm_u.starts_with(&norm_p) {
-                        exists = true;
-                        break;
-                    }
+        let text = std::fs::read_to_string(&cfg_path)
+            .map_err(|e| format!("Falha ao ler configuração do emulador: {e}"))?;
+        let update_dir = update_path.parent().unwrap_or(update_path);
+        let dir_str = update_dir.to_string_lossy().replace('\\', "/");
+        let ini = read_ini(&cfg_path);
+        let n: usize = ini.get("UI/Paths\\external_content_dirs\\size").and_then(|s| s.parse().ok()).unwrap_or(0);
+        let mut exists = false;
+        let norm_u = dir_str.trim_end_matches('/').to_lowercase();
+        for i in 1..=n {
+            if let Some(p) = ini.get(&format!("UI/Paths\\external_content_dirs\\{i}\\path")) {
+                let norm_p = p.replace('\\', "/").trim_end_matches('/').to_lowercase();
+                if norm_p == norm_u || norm_u.starts_with(&norm_p) {
+                    exists = true;
+                    break;
                 }
             }
-            if !exists {
-                let new_text = add_external_content_dir(&text, &dir_str);
-                let _ = std::fs::write(&cfg_path, new_text);
-            }
+        }
+        if !exists {
+            let new_text = add_external_content_dir(&text, &dir_str);
+            std::fs::write(&cfg_path, new_text)
+                .map_err(|e| format!("Falha ao gravar configuração do emulador: {e}"))?;
         }
     }
     Ok(())
@@ -420,6 +428,7 @@ pub fn list_games(emu: &Emu, names: &HashMap<String, String>) -> Vec<Game> {
                 icon: None,
                 is_compressed: false,
                 update_file: None,
+                update_registered: false,
             });
             if is_icon {
                 // capa do jogo base (o ícone de update/DLC é ignorado)
@@ -452,6 +461,7 @@ pub fn list_games(emu: &Emu, names: &HashMap<String, String>) -> Vec<Game> {
                         icon: None,
                         is_compressed: false,
                         update_file: None,
+                        update_registered: false,
                     });
                 }
             }
@@ -478,6 +488,7 @@ pub fn list_games(emu: &Emu, names: &HashMap<String, String>) -> Vec<Game> {
                 icon: None,
                 is_compressed: false,
                 update_file: None,
+                update_registered: false,
             });
         if g.name.is_none() && !name.is_empty() {
             g.name = Some(name);
@@ -505,7 +516,7 @@ pub fn list_games(emu: &Emu, names: &HashMap<String, String>) -> Vec<Game> {
                     regex::Regex::new(r"\[v(\d+)\]").ok().and_then(|re| re.captures(&stem).map(|m| format!("v{}", &m[1])))
                 });
             }
-            let _ = register_update(emu, &g.tid, &up_path);
+            g.update_registered = register_update(emu, &g.tid, &up_path).is_ok();
         }
     }
 
@@ -666,7 +677,27 @@ mod tests {
         assert!(g.is_compressed);
         assert!(g.update_file.is_some());
         assert_eq!(g.version, Some("v1114112".into()));
-
+        assert!(g.update_registered);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn register_update_propagates_missing_or_unwriteable_config_failures() {
+        let dir = std::env::temp_dir().join(format!("emm-reg-fail-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let emu = Emu { kind: Kind::Eden, dir: dir.clone() };
+        let tid = "01007EF00011E000";
+        let update_path = PathBuf::from("D:/Jogos/Update.nsp");
+        // Falha: pasta do emulador/config não existe
+        assert!(register_update(&emu, tid, &update_path).is_err());
+
+        // Ryujinx: updates.json corrompido
+        let ryu_dir = dir.join("ryu");
+        std::fs::create_dir_all(ryu_dir.join("games").join(tid.to_lowercase())).unwrap();
+        std::fs::write(ryu_dir.join("games").join(tid.to_lowercase()).join("updates.json"), b"corrupted{").unwrap();
+        let ryu = Emu { kind: Kind::Ryujinx, dir: ryu_dir };
+        assert!(register_update(&ryu, tid, &update_path).is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
