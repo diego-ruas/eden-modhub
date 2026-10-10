@@ -186,6 +186,18 @@ fn launch_game(app: AppHandle, tid: String) -> Result<(), String> {
     std::thread::spawn(move || { let _ = child.wait(); }); // colhe o processo; o emulador segue vivo se o app fechar
     Ok(())
 }
+#[tauri::command]
+fn register_game_update(app: AppHandle, tid: String) -> Result<Option<String>, String> {
+    emu::check_tid(&tid)?;
+    let emu = crate::resolve_emu(&app)?;
+    if let Some(up_path) = emu::find_update_file(&emu, &tid) {
+        emu::register_update(&emu, &tid, &up_path)?;
+        Ok(Some(up_path.to_string_lossy().into_owned()))
+    } else {
+        Ok(None)
+    }
+}
+
 
 #[derive(Serialize)]
 struct EmuDir {
@@ -344,6 +356,7 @@ pub fn run() {
             prefs::clear_cache,
             prefs::remove_tools,
             get_emu_dirs,
+            register_game_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

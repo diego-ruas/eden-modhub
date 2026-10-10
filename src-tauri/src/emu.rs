@@ -13,6 +13,8 @@ pub struct Game {
     pub name: Option<String>,
     pub version: Option<String>,
     pub icon: Option<String>,
+    pub is_compressed: bool,
+    pub update_file: Option<String>,
 }
 
 static PV_TID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^01[0-9A-F]{14}$").unwrap());
@@ -158,10 +160,16 @@ pub fn check_tid(tid: &str) -> Result<(), String> {
     }
 }
 
-/// TID do jogo base: updates (+0x800) e DLCs (+0x1000…) caem no app (últimos 13 bits zerados).
-fn base_tid(tid: &str) -> String {
-    u64::from_str_radix(tid, 16).map(|v| format!("{:016X}", v & !0x1FFF)).unwrap_or_else(|_| tid.to_string())
+/// Apenas IDs que terminam em 000 são jogos base no Switch (updates terminam em 800 e DLCs em outros sufixos).
+pub fn is_base_tid(tid: &str) -> bool {
+    tid.len() == 16 && tid.ends_with("000") && PV_TID.is_match(tid)
 }
+
+/// TID de update esperado para um jogo base (+0x800).
+pub fn update_tid(base_tid: &str) -> Option<String> {
+    u64::from_str_radix(base_tid, 16).ok().map(|v| format!("{:016X}", v + 0x800))
+}
+
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -287,10 +295,112 @@ pub fn game_file(emu: &Emu, tid: &str) -> Result<PathBuf, String> {
         .ok_or_else(|| "Jogo compactado (nsz/xcz): descomprima na aba NSZ para iniciar".into())
 }
 
+/// Procura o arquivo de update mais recente para o jogo base (+0x800).
+pub fn find_update_file(emu: &Emu, base_tid: &str) -> Option<PathBuf> {
+    let up_tid = update_tid(base_tid)?;
+    let mut ups: Vec<PathBuf> = rom_files(emu)
+        .into_iter()
+        .filter(|p| {
+            let stem = p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            crate::catalog::last_tid(&stem).is_some_and(|t| t.eq_ignore_ascii_case(&up_tid))
+        })
+        .collect();
+    ups.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
+    ups.into_iter().next()
+}
+
+pub(crate) fn add_external_content_dir(text: &str, dir: &str) -> String {
+    let eol = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let mut lines: Vec<String> = text.lines().map(String::from).collect();
+    let mut size_idx = None;
+    let mut current_size = 0usize;
+    let mut ui_idx = None;
+
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if trimmed == "[UI]" {
+            ui_idx = Some(i);
+        }
+        if trimmed.starts_with("Paths\\external_content_dirs\\size=") {
+            size_idx = Some(i);
+            if let Some(s) = trimmed.strip_prefix("Paths\\external_content_dirs\\size=") {
+                current_size = s.parse().unwrap_or(0);
+            }
+        }
+    }
+
+    let new_idx = current_size + 1;
+    let new_entry = format!("Paths\\external_content_dirs\\{new_idx}\\path={dir}");
+
+    if let Some(idx) = size_idx {
+        lines[idx] = format!("Paths\\external_content_dirs\\size={new_idx}");
+        lines.insert(idx + 1, new_entry);
+    } else if let Some(idx) = ui_idx {
+        lines.insert(idx + 1, "Paths\\external_content_dirs\\size=1".into());
+        lines.insert(idx + 2, format!("Paths\\external_content_dirs\\1\\path={dir}"));
+    } else {
+        lines.push("[UI]".into());
+        lines.push("Paths\\external_content_dirs\\size=1".into());
+        lines.push(format!("Paths\\external_content_dirs\\1\\path={dir}"));
+    }
+
+    lines.join(eol) + eol
+}
+
+/// Registra o update no emulador (Ryujinx: updates.json; Eden/yuzu: Paths\\external_content_dirs).
+pub fn register_update(emu: &Emu, base_tid: &str, update_path: &Path) -> Result<(), String> {
+    if emu.kind == Kind::Ryujinx {
+        let dir = emu.dir.join("games").join(base_tid.to_lowercase());
+        let _ = std::fs::create_dir_all(&dir);
+        let path_str = update_path.to_string_lossy().to_string();
+        let file = dir.join("updates.json");
+        let mut data: serde_json::Value = std::fs::read(&file)
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_else(|| serde_json::json!({ "selected": null, "paths": [] }));
+        let mut paths: Vec<String> = data["paths"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+        if !paths.iter().any(|p| p.eq_ignore_ascii_case(&path_str)) {
+            paths.push(path_str.clone());
+        }
+        data["selected"] = serde_json::Value::String(path_str);
+        data["paths"] = serde_json::Value::Array(paths.into_iter().map(serde_json::Value::String).collect());
+        if let Ok(bytes) = serde_json::to_vec_pretty(&data) {
+            let _ = std::fs::write(&file, bytes);
+        }
+    } else {
+        let cfg_path = qt_config(&emu.dir);
+        if let Ok(text) = std::fs::read_to_string(&cfg_path) {
+            let update_dir = update_path.parent().unwrap_or(update_path);
+            let dir_str = update_dir.to_string_lossy().replace('\\', "/");
+            let ini = read_ini(&cfg_path);
+            let n: usize = ini.get("UI/Paths\\external_content_dirs\\size").and_then(|s| s.parse().ok()).unwrap_or(0);
+            let mut exists = false;
+            let norm_u = dir_str.trim_end_matches('/').to_lowercase();
+            for i in 1..=n {
+                if let Some(p) = ini.get(&format!("UI/Paths\\external_content_dirs\\{i}\\path")) {
+                    let norm_p = p.replace('\\', "/").trim_end_matches('/').to_lowercase();
+                    if norm_p == norm_u || norm_u.starts_with(&norm_p) {
+                        exists = true;
+                        break;
+                    }
+                }
+            }
+            if !exists {
+                let new_text = add_external_content_dir(&text, &dir_str);
+                let _ = std::fs::write(&cfg_path, new_text);
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn list_games(emu: &Emu, names: &HashMap<String, String>) -> Vec<Game> {
     let mut games: HashMap<String, Game> = HashMap::new();
 
-    // (a) cache da lista de jogos (Eden/yuzu)
+    // (a) cache da lista de jogos (Eden/yuzu): apenas jogos base (TID terminando em 000)
     if let Ok(rd) = std::fs::read_dir(xdg_sibling(&emu.dir, "cache").join("game_list")) {
         for e in rd.flatten() {
             let fname = e.file_name().to_string_lossy().to_string();
@@ -299,11 +409,18 @@ pub fn list_games(emu: &Emu, names: &HashMap<String, String>) -> Vec<Game> {
                 (_, Some(s)) => (s, true),
                 _ => continue,
             };
-            let tid = base_tid(&stem.to_uppercase());
-            if !PV_TID.is_match(&tid) {
+            let tid = stem.to_uppercase();
+            if !is_base_tid(&tid) {
                 continue;
             }
-            let g = games.entry(tid.clone()).or_insert_with(|| Game { tid: tid.clone(), name: None, version: None, icon: None });
+            let g = games.entry(tid.clone()).or_insert_with(|| Game {
+                tid: tid.clone(),
+                name: None,
+                version: None,
+                icon: None,
+                is_compressed: false,
+                update_file: None,
+            });
             if is_icon {
                 // capa do jogo base (o ícone de update/DLC é ignorado)
                 if stem.eq_ignore_ascii_case(&tid) {
@@ -316,7 +433,6 @@ pub fn list_games(emu: &Emu, names: &HashMap<String, String>) -> Vec<Game> {
             let version = std::fs::read_to_string(e.path())
                 .ok()
                 .and_then(|c| VER.captures(&c).map(|m| m[1].to_string()));
-            // o cache de DLC/update também cai aqui; a primeira versão achada vale
             if g.version.is_none() {
                 g.version = version;
             }
@@ -327,25 +443,69 @@ pub fn list_games(emu: &Emu, names: &HashMap<String, String>) -> Vec<Game> {
     if emu.kind == Kind::Ryujinx {
         if let Ok(rd) = std::fs::read_dir(emu.dir.join("games")) {
             for e in rd.flatten() {
-                let tid = base_tid(&e.file_name().to_string_lossy().to_uppercase());
-                if PV_TID.is_match(&tid) {
-                    games.entry(tid.clone()).or_insert_with(|| Game { tid, name: None, version: None, icon: None });
+                let tid = e.file_name().to_string_lossy().to_uppercase();
+                if is_base_tid(&tid) {
+                    games.entry(tid.clone()).or_insert_with(|| Game {
+                        tid,
+                        name: None,
+                        version: None,
+                        icon: None,
+                        is_compressed: false,
+                        update_file: None,
+                    });
                 }
             }
         }
     }
 
-    // (b) varredura das pastas de jogos
-    for p in rom_files(emu) {
+    let all_roms = rom_files(emu);
+
+    // (b) varredura das pastas de jogos: apenas arquivos do jogo base
+    for p in &all_roms {
         let stem = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
         let Some(tid) = crate::catalog::last_tid(&stem) else { continue };
-        let base = base_tid(&tid);
+        let tid_upper = tid.to_uppercase();
+        if !is_base_tid(&tid_upper) {
+            continue;
+        }
         let name = stem.split(" [").next().unwrap_or(&stem).trim().to_string();
         let g = games
-            .entry(base.clone())
-            .or_insert_with(|| Game { tid: base, name: None, version: None, icon: None });
-        if g.name.is_none() && !name.is_empty() && tid == g.tid {
+            .entry(tid_upper.clone())
+            .or_insert_with(|| Game {
+                tid: tid_upper,
+                name: None,
+                version: None,
+                icon: None,
+                is_compressed: false,
+                update_file: None,
+            });
+        if g.name.is_none() && !name.is_empty() {
             g.name = Some(name);
+        }
+    }
+
+    // Verifica compressão e detecta updates de cada jogo
+    for g in games.values_mut() {
+        let base_roms: Vec<&PathBuf> = all_roms
+            .iter()
+            .filter(|p| {
+                let stem = p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+                crate::catalog::last_tid(&stem).is_some_and(|t| t.eq_ignore_ascii_case(&g.tid))
+            })
+            .collect();
+        let has_uncompressed = base_roms.iter().any(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("nsp") || x.eq_ignore_ascii_case("xci")));
+        let has_compressed = base_roms.iter().any(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("nsz") || x.eq_ignore_ascii_case("xcz")));
+        g.is_compressed = has_compressed && !has_uncompressed;
+
+        if let Some(up_path) = find_update_file(emu, &g.tid) {
+            g.update_file = Some(up_path.to_string_lossy().into_owned());
+            if g.version.is_none() {
+                let stem = up_path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+                g.version = VER.captures(&stem).map(|m| m[1].to_string()).or_else(|| {
+                    regex::Regex::new(r"\[v(\d+)\]").ok().and_then(|re| re.captures(&stem).map(|m| format!("v{}", &m[1])))
+                });
+            }
+            let _ = register_update(emu, &g.tid, &up_path);
         }
     }
 
@@ -438,5 +598,75 @@ mod tests {
         assert!(Kind::Yuzu.validate(&data));
         let emu = Emu { kind: Kind::Yuzu, dir: data };
         assert_eq!(emu.mods_dir(), PathBuf::from("/x/load"));
+    }
+
+    #[test]
+    fn base_tid_detection_and_update_calculation() {
+        assert!(is_base_tid("01007EF00011E000"));
+        assert!(is_base_tid("0100152000022000"));
+        // Update (+0x800) e DLC (+0x1001) não são jogos base
+        assert!(!is_base_tid("01007EF00011E800"));
+        assert!(!is_base_tid("0100152000022800"));
+        assert!(!is_base_tid("0100152000023001"));
+        assert_eq!(update_tid("01007EF00011E000"), Some("01007EF00011E800".into()));
+        assert_eq!(update_tid("0100152000022000"), Some("0100152000022800".into()));
+    }
+
+    #[test]
+    fn external_content_dirs_manipulation() {
+        let ini = "[UI]\nPaths\\gamedirs\\size=1\n";
+        let out = add_external_content_dir(ini, "D:/Jogos/Updates");
+        assert!(out.contains("Paths\\external_content_dirs\\size=1"));
+        assert!(out.contains("Paths\\external_content_dirs\\1\\path=D:/Jogos/Updates"));
+        let out2 = add_external_content_dir(&out, "E:/Outro");
+        assert!(out2.contains("Paths\\external_content_dirs\\size=2"));
+        assert!(out2.contains("Paths\\external_content_dirs\\2\\path=E:/Outro"));
+    }
+
+    #[test]
+    fn ryujinx_register_update() {
+        let dir = std::env::temp_dir().join(format!("emm-ryu-up-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let emu = Emu { kind: Kind::Ryujinx, dir: dir.clone() };
+        let tid = "01007EF00011E000";
+        let update_path = PathBuf::from("D:/Jogos/Zelda_Update.nsp");
+        register_update(&emu, tid, &update_path).unwrap();
+        let json_path = dir.join("games").join(tid.to_lowercase()).join("updates.json");
+        assert!(json_path.is_file());
+        let val: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(json_path).unwrap()).unwrap();
+        assert_eq!(val["selected"], "D:/Jogos/Zelda_Update.nsp");
+        assert_eq!(val["paths"], serde_json::json!(["D:/Jogos/Zelda_Update.nsp"]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[test]
+    fn list_games_filters_updates_dlcs_and_detects_compression() {
+        let root = std::env::temp_dir().join(format!("emm-list-games-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let games_dir = root.join("games");
+        std::fs::create_dir_all(&games_dir).unwrap();
+        std::fs::create_dir_all(root.join("user/config")).unwrap();
+        let ini = format!("[UI]\nPaths\\gamedirs\\size=1\nPaths\\gamedirs\\1\\path={}\nPaths\\gamedirs\\1\\deep_scan=true\n", games_dir.display());
+        std::fs::write(root.join("user/config/qt-config.ini"), ini).unwrap();
+        let emu = Emu { kind: Kind::Eden, dir: root.join("user") };
+
+        // 1. Jogo base em NSZ (compactado) + update em NSP
+        std::fs::write(games_dir.join("Zelda [01007EF00011E000][v0].nsz"), b"z").unwrap();
+        std::fs::write(games_dir.join("Zelda [01007EF00011E800][v1114112].nsp"), b"u").unwrap();
+
+        // 2. Arquivos avulsos de update e DLC de outro jogo sem o jogo base
+        std::fs::write(games_dir.join("Standalone [0100AAAA00001800][v65536].nsp"), b"u").unwrap();
+        std::fs::write(games_dir.join("DLC Only [0100AAAA00002001][v0].nsp"), b"d").unwrap();
+
+        let games = list_games(&emu, &HashMap::new());
+        // Deve listar APENAS o jogo base Zelda (1 jogo)
+        assert_eq!(games.len(), 1);
+        let g = &games[0];
+        assert_eq!(g.tid, "01007EF00011E000");
+        assert!(g.is_compressed);
+        assert!(g.update_file.is_some());
+        assert_eq!(g.version, Some("v1114112".into()));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 }
