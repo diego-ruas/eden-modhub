@@ -21,8 +21,15 @@ const TTL: Duration = Duration::from_secs(600);
 
 // pedidos simultâneos ao GameBanana (todas as varreduras juntas)
 static INFLIGHT: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(MAX_INFLIGHT);
-// (tid, todos?) -> mods; vale `TTL`
-static CACHE: LazyLock<Mutex<HashMap<(String, bool), (Instant, Vec<GbMod>)>>> = LazyLock::new(Default::default);
+#[derive(Clone)]
+struct CacheEntry {
+    at: Instant,
+    mods: Vec<GbMod>,
+    complete: bool,
+}
+
+// (tid, todos?) -> CacheEntry; vale `TTL`
+static CACHE: LazyLock<Mutex<HashMap<(String, bool), CacheEntry>>> = LazyLock::new(Default::default);
 // cache de id do jogo no GameBanana por nome normalizado (evita roundtrip ao Util/Search/Results)
 static GAME_IDS: LazyLock<Mutex<HashMap<String, u64>>> = LazyLock::new(Default::default);
 
@@ -185,25 +192,31 @@ async fn fetch(game: u64, featured: bool, min_likes: u32, max_pages: u32) -> Res
 /// Procura um mod do GameBanana em qualquer cache existente em memória.
 pub fn find_cached_mod(id: &str) -> Option<ModEntry> {
     let c = CACHE.lock();
-    for (_, (_, mods)) in c.iter() {
-        if let Some(m) = mods.iter().find(|m| m.entry.id == id) {
+    for (_, entry) in c.iter() {
+        if let Some(m) = entry.mods.iter().find(|m| m.entry.id == id) {
             return Some(m.entry.clone());
         }
     }
     None
 }
 
-/// Lista em cache e ainda válida. Curados são subconjunto de "todos", então saem dele sem rede.
+/// Lista em cache e ainda válida.
+/// Curados só podem ser derivados do cache de "todos" se a busca de "todos" estiver COMPLETA,
+/// evitando que um stream parcial de "todos" mascare os curados no prefetch.
 fn cached(tid: &str, all: bool) -> Option<Vec<GbMod>> {
     let c = CACHE.lock();
-    let fresh = |all| c.get(&(tid.to_string(), all)).filter(|(at, _)| at.elapsed() < TTL).map(|(_, m)| m);
-    if let Some(m) = fresh(all) {
-        return Some(m.clone());
+    let entry = c.get(&(tid.to_string(), all)).filter(|e| e.at.elapsed() < TTL);
+    if let Some(e) = entry {
+        if !all || e.complete {
+            return Some(e.mods.clone());
+        }
     }
     if all {
         return None;
     }
-    fresh(true).map(|m| m.iter().filter(|m| m.likes >= MIN_LIKES || m.featured).cloned().collect())
+    c.get(&(tid.to_string(), true))
+        .filter(|e| e.complete && e.at.elapsed() < TTL)
+        .map(|e| e.mods.iter().filter(|m| m.likes >= MIN_LIKES || m.featured).cloned().collect())
 }
 
 #[derive(Serialize, Clone)]
@@ -220,6 +233,7 @@ pub struct GbMod {
 #[serde(rename_all = "camelCase")]
 pub struct GbMore {
     pub tid: String,
+    pub all: bool,
     pub mods: Vec<GbMod>,
     pub complete: bool,
 }
@@ -290,14 +304,22 @@ pub async fn list(
         let mut r = fetch(game, false, MIN_LIKES, MAX_PAGES).await?;
         r.extend(featured.await.map_err(|e| format!("Falha de rede: {e}"))??);
         let mods = to_gb_mods(r, tid);
-        CACHE.lock().insert((tid.to_string(), false), (Instant::now(), mods.clone()));
+        CACHE.lock().insert((tid.to_string(), false), CacheEntry {
+            at: Instant::now(),
+            mods: mods.clone(),
+            complete: true,
+        });
         return Ok(GbList { found: true, mods });
     }
 
     // Modo "Todos": busca e entrega o primeiro lote imediatamente
     let (mut all_recs, complete) = fetch_chunk(game, false, 0, 1, BATCH).await?;
     let initial_mods = to_gb_mods(all_recs.clone(), tid);
-    CACHE.lock().insert((tid.to_string(), true), (Instant::now(), initial_mods.clone()));
+    CACHE.lock().insert((tid.to_string(), true), CacheEntry {
+        at: Instant::now(),
+        mods: initial_mods.clone(),
+        complete,
+    });
 
     // Se houver mais páginas a buscar, continua em segundo plano alimentando o cache e a UI
     if !complete && app.is_some() {
@@ -309,16 +331,26 @@ pub async fn list(
                 let count = BATCH.min(MAX_PAGES - page + 1);
                 let Ok((chunk, is_complete)) = fetch_chunk(game, false, 0, page, count).await else { break };
                 if chunk.is_empty() {
+                    CACHE.lock().insert((tid_owned.clone(), true), CacheEntry {
+                        at: Instant::now(),
+                        mods: to_gb_mods(all_recs.clone(), &tid_owned),
+                        complete: true,
+                    });
                     break;
                 }
                 all_recs.extend(chunk);
                 let current_mods = to_gb_mods(all_recs.clone(), &tid_owned);
-                CACHE.lock().insert((tid_owned.clone(), true), (Instant::now(), current_mods.clone()));
                 let is_last = is_complete || page + count > MAX_PAGES;
+                CACHE.lock().insert((tid_owned.clone(), true), CacheEntry {
+                    at: Instant::now(),
+                    mods: current_mods.clone(),
+                    complete: is_last,
+                });
                 let _ = app_handle.emit(
                     "gamebanana-more",
                     GbMore {
                         tid: tid_owned.clone(),
+                        all: true,
                         mods: current_mods,
                         complete: is_last,
                     },
@@ -499,11 +531,42 @@ mod tests {
     fn prefetch_curated_skips_cached() {
         tauri::async_runtime::block_on(async {
             let tid = "0100TEST00000000";
-            CACHE.lock().insert((tid.to_string(), false), (Instant::now(), Vec::new()));
+            CACHE.lock().insert((tid.to_string(), false), CacheEntry {
+                at: Instant::now(),
+                mods: Vec::new(),
+                complete: true,
+            });
             let t0 = Instant::now();
             prefetch_curated(vec![(tid.to_string(), "Nonexistent Game".into())]).await;
             assert!(t0.elapsed() < Duration::from_millis(50));
         });
+    }
+
+    #[test]
+    fn cached_curated_does_not_derive_from_incomplete_all_cache() {
+        let tid = "0100INCOMPLETE000";
+        CACHE.lock().insert(
+            (tid.to_string(), true),
+            CacheEntry {
+                at: Instant::now(),
+                mods: Vec::new(),
+                complete: false,
+            },
+        );
+        // Cache de "all" ainda está parcial: Curados NÃO podem derivar dele
+        assert!(cached(tid, false).is_none());
+
+        // Quando "all" conclui e marca `complete: true`:
+        CACHE.lock().insert(
+            (tid.to_string(), true),
+            CacheEntry {
+                at: Instant::now(),
+                mods: Vec::new(),
+                complete: true,
+            },
+        );
+        // Agora pode derivar com segurança
+        assert!(cached(tid, false).is_some());
     }
 
 }
