@@ -64,6 +64,8 @@ struct Rec {
     featured: bool,
     #[serde(rename = "_nViewCount", default)]
     views: u32,
+    #[serde(rename = "_bHasContentRatings", default)]
+    has_content_ratings: bool,
     // Value: APIs PHP mandam `[]` no lugar de objeto vazio
     #[serde(rename = "_aPreviewMedia", default)]
     media: serde_json::Value,
@@ -244,6 +246,7 @@ pub struct GbMod {
     pub likes: u32,
     pub views: u32,
     pub featured: bool,
+    pub nsfw: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -276,22 +279,31 @@ fn to_gb_mods(recs: BTreeMap<u64, Rec>, tid: &str) -> Vec<GbMod> {
     let mut mods: Vec<_> = recs
         .into_values()
         .filter(|r| r.has_files && !r.obsolete)
-        .map(|r| GbMod {
-            thumb: image(&r.media, &["_sFile530", "_sFile100"]),
-            likes: r.likes,
-            views: r.views,
-            featured: r.featured,
-            entry: ModEntry {
-                id: format!("{}{}", Source::Gamebanana.id_prefix(), r.id),
-                tid: Some(tid.to_string()),
-                name: r.name,
-                version: None,
-                kind: ModKind::Archive,
-                files: vec![ModFile { src: r.id.to_string(), dest: String::new() }],
-                size: 0,
-                group: String::new(),
-                source: Source::Gamebanana,
-            },
+        .map(|r| {
+            let n_lower = r.name.to_lowercase();
+            let nsfw = r.has_content_ratings
+                || n_lower.contains("nsfw")
+                || n_lower.contains("+18")
+                || n_lower.contains("18+")
+                || n_lower.contains("nude");
+            GbMod {
+                thumb: image(&r.media, &["_sFile530", "_sFile100"]),
+                likes: r.likes,
+                views: r.views,
+                featured: r.featured,
+                nsfw,
+                entry: ModEntry {
+                    id: format!("{}{}", Source::Gamebanana.id_prefix(), r.id),
+                    tid: Some(tid.to_string()),
+                    name: r.name,
+                    version: None,
+                    kind: ModKind::Archive,
+                    files: vec![ModFile { src: r.id.to_string(), dest: String::new() }],
+                    size: 0,
+                    group: String::new(),
+                    source: Source::Gamebanana,
+                },
+            }
         })
         .collect();
     mods.sort_by(|a, b| b.likes.cmp(&a.likes).then_with(|| a.entry.name.cmp(&b.entry.name)));
@@ -489,12 +501,12 @@ mod tests {
     #[test]
     fn parses_sparse_index_page() {
         let j = r#"{"_aMetadata":{"_nRecordCount":2,"_bIsComplete":true,"_nPerpage":50},
-            "_aRecords":[{"_idRow":1,"_sName":"A","_bHasFiles":true,"_nLikeCount":7,"_bWasFeatured":true,"_x":{},"_aPreviewMedia":{"_aImages":[{"_sBaseUrl":"https://x/ss","_sFile100":"100-a.jpg"}]}},
+            "_aRecords":[{"_idRow":1,"_sName":"A","_bHasFiles":true,"_nLikeCount":7,"_bWasFeatured":true,"_bHasContentRatings":true,"_x":{},"_aPreviewMedia":{"_aImages":[{"_sBaseUrl":"https://x/ss","_sFile100":"100-a.jpg"}]}},
                          {"_idRow":2,"_sName":"B","_aPreviewMedia":[]}]}"#;
         let p: Page<Rec> = serde_json::from_str(j).unwrap();
         assert!(p.meta.complete);
-        assert_eq!((p.records[0].likes, p.records[0].featured, p.records[0].has_files), (7, true, true));
-        assert_eq!((p.records[1].likes, p.records[1].has_files, p.records[1].obsolete), (0, false, false));
+        assert_eq!((p.records[0].likes, p.records[0].featured, p.records[0].has_files, p.records[0].has_content_ratings), (7, true, true, true));
+        assert_eq!((p.records[1].likes, p.records[1].has_files, p.records[1].obsolete, p.records[1].has_content_ratings), (0, false, false, false));
         let keys = ["_sFile530", "_sFile100"];
         assert_eq!(image(&p.records[0].media, &keys), Some("https://x/ss/100-a.jpg".into()));
         assert_eq!(image(&p.records[1].media, &keys), None);

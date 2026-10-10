@@ -51,6 +51,32 @@
   const gbPendingMore = new Map<number, GbMore>();
   let gbSort = $state<"likes" | "newest" | "views" | "name">("likes");
   let gbFeaturedOnly = $state(false);
+  let hideNsfw = $state(true);
+  onMount(() => {
+    const savedNsfw = localStorage.getItem("hideNsfw");
+    if (savedNsfw !== null) hideNsfw = savedNsfw !== "0";
+  });
+
+  async function toggleNsfw(e?: Event) {
+    const target = (e?.currentTarget as HTMLElement)?.tagName === "INPUT" ? (e?.currentTarget as HTMLInputElement) : null;
+    if (hideNsfw) {
+      const ok = await confirm(t("confirmNsfwShow"), {
+        title: t("confirmNsfwTitle"),
+        kind: "warning",
+        okLabel: t("confirmNsfwOk"),
+        cancelLabel: t("cancel"),
+      });
+      if (ok) {
+        hideNsfw = false;
+        localStorage.setItem("hideNsfw", "0");
+      }
+      if (target) target.checked = hideNsfw;
+    } else {
+      hideNsfw = true;
+      localStorage.setItem("hideNsfw", "1");
+      if (target) target.checked = true;
+    }
+  }
   let gbShown = $state(50);
   let gbDlg = $state<HTMLDialogElement>();
   let gbOpen = $state<GbMod | null>(null);
@@ -275,6 +301,7 @@
 
     const filtered = gb.mods.filter((m) => {
       if (gbFeaturedOnly && !m.featured) return false;
+      if (hideNsfw && m.nsfw) return false;
       if (!terms.length) return true;
       const name = m.name.toLowerCase();
       const id = m.id.toLowerCase();
@@ -557,6 +584,15 @@
   }
 
   async function install(m: ModEntry, only?: string) {
+    if ("nsfw" in m && m.nsfw) {
+      const ok = await confirm(t("confirmNsfwInstall"), {
+        title: t("confirmNsfwTitle"),
+        kind: "warning",
+        okLabel: t("install"),
+        cancelLabel: t("cancel"),
+      });
+      if (!ok) return;
+    }
     installingId = m.id;
     failedId = null;
     await stage(() => api.prepareInstall(selected!.tid, m.id), only);
@@ -732,7 +768,8 @@
       <span class="card-img">
         {#if m.thumb}<img src={m.thumb} alt="" loading="lazy" decoding="async" />{/if}
         {#if failed}<span class="card-flag bad">{@render icon(ICON.alert)}{t("gbFailed")}</span>
-        {:else if isInstalled}<span class="card-flag">{@render icon(ICON.check)}{t("gbInstalled")}</span>{/if}
+        {:else if isInstalled}<span class="card-flag">{@render icon(ICON.check)}{t("gbInstalled")}</span>
+        {:else if m.nsfw}<span class="card-flag nsfw">18+</span>{/if}
         {#if working}<span class="card-bar"><span class="card-fill" class:indet={!progress?.total} style:width={progress?.total ? `${Math.min(100, (progress.received / progress.total) * 100)}%` : undefined}></span></span>{/if}
       </span>
       <span class="card-name">{m.featured ? "★ " : ""}{m.name}</span>
@@ -922,6 +959,9 @@
               </div>
               <div class="seg" role="group" aria-label={t("gbFeaturedOnly")}>
                 <button aria-pressed={gbFeaturedOnly} title={t("gbFeaturedOnlyTip")} onclick={() => (gbFeaturedOnly = !gbFeaturedOnly)}>{#if gbFeaturedOnly}{@render icon(ICON.check)}{/if}★ {t("gbFeaturedOnly")}</button>
+              </div>
+              <div class="seg" role="group" aria-label={t("filterNsfw")}>
+                <button aria-pressed={hideNsfw} title={t("filterNsfwTip")} onclick={toggleNsfw}>{#if hideNsfw}{@render icon(ICON.check)}{/if}{t("filterNsfw")}</button>
               </div>
             {/if}
           </div>
@@ -1115,6 +1155,7 @@
           <p>{plain(gbDetail.text) || t("gbNoText")}</p>
         {/if}
       </div>
+      {#if m.nsfw}<p class="gbm-warn nsfw">{@render icon(ICON.alert)}{t("nsfwModWarn")}</p>{/if}
       <p class="gbm-warn">{@render icon(ICON.alert)}{t("gbWarnShort")}</p>
       <div class="actions">
         <button class="ghost" onclick={() => openUrl(githubUrl(m))}>{t("viewGb")}</button>
@@ -1203,6 +1244,13 @@
           <p class="muted small">{t("setVersion", { v: appVersion })}</p>
           <label><input type="checkbox" checked={autoUpdate} onchange={(e) => setAutoUpdate(e.currentTarget.checked)} /> {t("setAutoCheck")}</label>
           <button disabled={busy} onclick={checkUpdate}>{t("updCheck")}</button>
+        </div>
+      </section>
+      <section class="srow">
+        <h4>GameBanana</h4>
+        <div class="sctl">
+          <label><input type="checkbox" checked={hideNsfw} onchange={toggleNsfw} /> {t("filterNsfw")}</label>
+          <p class="muted small">{t("filterNsfwTip")}</p>
         </div>
       </section>
       <section class="srow">
@@ -1431,6 +1479,7 @@
   .fw-status { color: var(--muted); }
   .fw-status.ok { color: var(--ok); }
   .gbm-warn { display: flex; gap: 8px; align-items: flex-start; margin: 0 0 12px; font-size: 12px; line-height: 1.4; color: var(--muted); }
+  .gbm-warn.nsfw { color: #f59e0b; }
   .panel-head .seg button { padding: 2px 10px; }
   .info { flex: 1; min-width: 0; }
   .name, .sub { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1482,7 +1531,8 @@
   .toasts { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); z-index: 10; display: flex; flex-direction: column; align-items: center; gap: 8px; width: min(440px, calc(100vw - 40px)); pointer-events: none; }
   .toasts > * { pointer-events: auto; width: 100%; }
   .card.failed { outline: 2px solid var(--danger); }
-  .card-flag.bad { background: var(--danger-bg); color: var(--danger); }
+  .card-flag.bad { background: #b91c1c; color: #ffffff; border: 1px solid #ef4444; }
+  .card-flag.nsfw { background: #b45309; color: #ffffff; border: 1px solid #f59e0b; }
   .toast { display: flex; align-items: center; gap: 10px; box-sizing: border-box; width: 100%; padding: 10px 12px 10px 16px; border-radius: 12px; background: var(--toast); color: var(--fg); border: 1px solid var(--border); box-shadow: var(--shadow); backdrop-filter: blur(16px); }
   .toast { transition: opacity 0.16s ease, transform 0.16s ease; }
   @starting-style { .toast { opacity: 0; transform: translateY(8px); } }
