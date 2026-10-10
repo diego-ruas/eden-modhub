@@ -48,6 +48,7 @@
   let autoUpdate = $state(localStorage.getItem("autoUpdate") !== "off");
   let gbAll = $state(localStorage.getItem("gbAll") === "on");
   let gb = $state<{ tid: string; status: "loading" | "ok" | "notfound" | "error"; mods: GbMod[]; error: string } | null>(null);
+  const gbPendingMore = new Map<number, GbMore>();
   let gbSort = $state<"likes" | "newest" | "views" | "name">("likes");
   let gbFeaturedOnly = $state(false);
   let gbShown = $state(50);
@@ -440,13 +441,16 @@
   async function loadGb(g: Game, fresh = false) {
     if (!catalog) return;
     const seq = ++gbSeq;
+    gbPendingMore.clear();
     gbShown = 50;
     if (!g.name) { gb = { tid: g.tid, status: "notfound", mods: [], error: "" }; return; }
     gb = { tid: g.tid, status: "loading", mods: [], error: "" };
     try {
-      const r = await api.gamebananaMods(g.tid, g.name, gbAll, fresh);
+      const r = await api.gamebananaMods(g.tid, g.name, gbAll, seq, fresh);
       if (seq !== gbSeq) return;
-      gb = { tid: g.tid, status: r.found ? "ok" : "notfound", mods: r.mods, error: "" };
+      const streamed = gbPendingMore.get(seq)?.mods ?? r.mods;
+      gbPendingMore.clear();
+      gb = { tid: g.tid, status: r.found ? "ok" : "notfound", mods: streamed, error: "" };
     } catch (e) {
       if (seq !== gbSeq) return;
       gb = { tid: g.tid, status: "error", mods: [], error: trErr(String(e)) };
@@ -664,11 +668,13 @@
     });
     const unGbMore = listen<GbMore>("gamebanana-more", (e) => {
       if (
+        e.payload.requestId === gbSeq &&
         e.payload.tid === selected?.tid &&
         gb &&
         gb.tid === selected?.tid &&
         gbAll === e.payload.all
       ) {
+        if (gb.status === "loading") gbPendingMore.set(e.payload.requestId, e.payload);
         gb = { ...gb, mods: e.payload.mods };
       }
     });

@@ -251,6 +251,7 @@ pub struct GbMod {
 pub struct GbMore {
     pub tid: String,
     pub all: bool,
+    pub request_id: u64,
     pub mods: Vec<GbMod>,
     pub complete: bool,
 }
@@ -297,14 +298,26 @@ fn to_gb_mods(recs: BTreeMap<u64, Rec>, tid: &str) -> Vec<GbMod> {
     mods
 }
 
-/// Mods do jogo `tid`/`name`. `all` = todos (com entrega progressiva); senão, só os curados.
-/// No modo "Todos", a primeira página retorna imediatamente; as demais continuam em segundo plano.
+/// Busca mods do GameBanana sem associar eventos progressivos a um pedido da interface.
 pub async fn list(
     app: Option<&AppHandle>,
     tid: &str,
     name: &str,
     all: bool,
     fresh: bool,
+) -> Result<GbList, String> {
+    list_for_request(app, tid, name, all, fresh, 0).await
+}
+
+/// Mods do jogo `tid`/`name`. `all` = todos (com entrega progressiva); senão, só os curados.
+/// No modo "Todos", a primeira página retorna imediatamente; as demais continuam em segundo plano.
+pub async fn list_for_request(
+    app: Option<&AppHandle>,
+    tid: &str,
+    name: &str,
+    all: bool,
+    fresh: bool,
+    request_id: u64,
 ) -> Result<GbList, String> {
     if !fresh {
         if let Some(mods) = cached(tid, all) {
@@ -366,6 +379,7 @@ pub async fn list(
                     "gamebanana-more",
                     GbMore {
                         tid: tid_owned.clone(),
+                        request_id,
                         all: true,
                         mods: current_mods,
                         complete: is_last,
